@@ -248,7 +248,7 @@ Acceptance criteria:
 - [x] Không cần key (Open-Meteo free) nhưng phải xử lý lỗi request.
 - [x] Schema `traffic_data.csv` ổn định cho Phase 4+.
 
-### Phase 4 — Historical Data Collection (CURRENT_PHASE — ĐANG THỰC HIỆN)
+### Phase 4 — Historical Data Collection (HOÀN THÀNH)
 
 Nội dung:
 
@@ -256,12 +256,12 @@ Nội dung:
 
 Acceptance criteria:
 
-- [ ] `traffic_data.csv` có dữ liệu nhiều khung giờ/ngày khác nhau.
-- [ ] Không trùng lặp/ghi đè; timestamp chuẩn parse được bằng Spark.
-- [ ] Có backup dataset dùng cho demo khi mất mạng/API.
-- [ ] Tài liệu ngắn ghi cách chạy collector để lấy thêm dữ liệu.
+- [x] `traffic_data.csv` có dữ liệu nhiều khung giờ/ngày khác nhau.
+- [x] Không trùng lặp/ghi đè; timestamp chuẩn parse được bằng Spark.
+- [ ] Có backup dataset dùng cho demo khi mất mạng/API (chuyển sang Phase 10 Testing & Demo — phase này đã yêu cầu backup dataset).
+- [ ] Tài liệu ngắn ghi cách chạy collector để lấy thêm dữ liệu (chuyển sang Phase 10 cùng README demo).
 
-### Phase 5 — Spark ETL
+### Phase 5 — Spark ETL (CURRENT_PHASE — ĐANG THỰC HIỆN)
 
 Nội dung (bắt buộc dùng PySpark):
 
@@ -362,22 +362,32 @@ Acceptance criteria:
 - Phase 3 Weather Integration completed (3.1 client → 3.7 final verification PASS).
 - Raw datasets remain separate: traffic_data.csv = TomTom raw observations; weather_data.csv = Open-Meteo raw observations.
 - Spark will implement equivalent integration semantics in Phase 5.
+- Controlled historical scheduler (Buoc 4.4): module historical_collector.py dung configured 15-min slots + active windows; max_cycles bat buoc (> 0), KHONG infinite mode; slot semantics start-inclusive/end-exclusive; next >= now, sau cycle dung strict-after (khong duplicate); missed slots skipped, khong backfill; fatal cycle error -> ghi error, count attempt, sang slot tiep (khong retry ngay); scheduling dung Asia/Ho_Chi_Minh timezone-aware datetimes (reject naive).
+- Historical collection cadence (Buoc 4.3): interval 15 min, windows 06:00–10:00 + 16:00–20:00 Asia/Ho_Chi_Minh (start inclusive, end exclusive); 5 roads → 32 cycles/day (16+16); estimate 160 TomTom + 160 Open-Meteo requests/day, 4,800/30 days; configured budget 20,000, safety limit 16,000 (80%); pure helper estimate_collection_budget() trong config.py, KHONG scheduler/quota tracker o buoc nay.
+- Phase 4 Final Verification PASS (Buoc 4.6: 53 checks, 0 API, raw datasets byte-exact unchanged).
+- Production raw state at Phase 4 close: traffic_data.csv = 15 observations / 5 roads; weather_data.csv = 10 observations / 5 roads.
+- Cross-source diagnostic at close: 15/15 traffic observations matched weather within locked 60-minute temporal contract.
+- Phase 5 raw input contract: data/traffic_data.csv + data/weather_data.csv la RAW INPUT chi duoc READ; Spark KHONG duoc rewrite/normalize/dedup in-place, append derived columns (congestion), merge weather vao raw traffic, hay xoa observations; moi output dan xuat vao data/processed/.
+- Buoc 5.1 SparkSession + explicit raw schemas PASS (local[*], Spark 4.2.0; traffic 9 fields + weather 12 fields, timestamp StringType; counts 15/10 khop raw; 0 nulls).
+- Buoc 5.2 traffic validation + timestamp normalization PASS: validate_and_normalize_traffic() fail-fast (khong sua/drop rows), event_timestamp TimestampType (session tz UTC, Asia/Ho_Chi_Minh chi dung cho scheduling); production 15/15 valid, 0 parse failures.
+- Buoc 5.3 weather validation + timestamp normalization PASS: validate_and_normalize_weather() fail-fast (raw timestamp bat buoc timezone-aware, weather_code chi NOT NULL); production 10/10 valid; traffic regression 15/15 OK.
 
 ---
 
 ## 8. Trạng thái hiện tại
 
 ```text
-CURRENT_PHASE = 4
-LAST_COMPLETED_PHASE = 3
-NEXT_PHASE = 5
+CURRENT_PHASE = 5
+LAST_COMPLETED_PHASE = 4
+NEXT_PHASE = 6
 ```
 
 - Phase 0: HOÀN THÀNH.
 - Phase 1 (Project Foundation): HOÀN THÀNH — đã được người dùng xác nhận.
 - Phase 2 (TomTom Traffic): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
 - Phase 3 (Weather Integration): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
-- Phase 4 (Historical Data Collection): ĐANG THỰC HIỆN.
-- Phase 5–10: CHƯA LÀM.
-- Không được triển khai Phase 5 trước khi Phase 4 được người dùng xác nhận hoàn thành.
+- Phase 4 (Historical Data Collection): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
+- Phase 5 (Spark ETL): ĐANG THỰC HIỆN.
+- Phase 6–10: CHƯA LÀM.
+- Không được triển khai Phase 6 trước khi Phase 5 được người dùng xác nhận hoàn thành.
 - Không tự chuyển `CURRENT_PHASE`; việc chuyển phase cần người dùng xác nhận.
