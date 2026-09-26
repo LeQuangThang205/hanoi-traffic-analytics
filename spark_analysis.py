@@ -645,6 +645,42 @@ def default_processed_path():
     return Path(__file__).resolve().parent / "data" / "processed" / PROCESSED_FILENAME
 
 
+def _write_snapshot_csv(final_path, header, rows):
+    """Ghi snapshot CSV single-file (temp sibling + os.replace, UTF-8).
+
+    - Helper chung cho Phase 5.7 va Phase 6.1 (approved MVP driver-side
+      serialization; KHONG scalable, KHONG Pandas, KHONG thay Spark).
+    - `rows` la iterable cac sequence gia tri tho (se serialize qua
+      _export_value); header ghi dung 1 lan, khong index col.
+    - Snapshot replacement: chi os.replace sang final sau khi write +
+      flush + close thanh cong; loi -> file cu giu nguyen, temp duoc don.
+    """
+    import csv as _csv
+    import os
+    import uuid
+    from pathlib import Path
+
+    final = Path(final_path)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    tmp = final.parent / f"{final.name}.tmp-{uuid.uuid4().hex[:8]}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            writer = _csv.writer(fh)
+            writer.writerow(list(header))
+            for row in rows:
+                writer.writerow([_export_value(v) for v in row])
+        os.replace(tmp, final)
+    except Exception:
+        raise
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+    return final
+
+
 def export_processed_data(df, output_path=None):
     """Export final joined DataFrame ra single-file CSV (snapshot replacement).
 
@@ -666,9 +702,6 @@ def export_processed_data(df, output_path=None):
     - Tra ve metadata (output_path, output_rows, header, export_strategy).
       Khong session/API. Caller quan ly SparkSession.
     """
-    import csv as _csv
-    import os
-    import uuid
     from pathlib import Path
 
     from pyspark.sql import functions as F
@@ -680,33 +713,19 @@ def export_processed_data(df, output_path=None):
         )
 
     final = Path(output_path) if output_path is not None else default_processed_path()
-    final.parent.mkdir(parents=True, exist_ok=True)
-    tmp = final.parent / f"{final.name}.tmp-{uuid.uuid4().hex[:8]}"
-    try:
-        ordered = (
-            df.orderBy(*[F.col(c).asc() for c in EXPORT_ORDER_COLUMNS])
-            .withColumn("event_timestamp",
-                        F.date_format("event_timestamp", EXPORT_TS_FORMAT))
-            .withColumn("weather_event_timestamp",
-                        F.date_format("weather_event_timestamp", EXPORT_TS_FORMAT))
-        )
-        # Collect nay CHI thuoc final export layer cho snapshot MVP nho;
-        # moi ETL/matching van la Spark column expressions.
-        rows = ordered.collect()
-        with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            writer = _csv.writer(fh)
-            writer.writerow(EXPORT_REQUIRED_COLUMNS)
-            for row in rows:
-                writer.writerow([_export_value(row[c]) for c in EXPORT_REQUIRED_COLUMNS])
-        os.replace(tmp, final)
-    except Exception:
-        raise
-    finally:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+    ordered = (
+        df.orderBy(*[F.col(c).asc() for c in EXPORT_ORDER_COLUMNS])
+        .withColumn("event_timestamp",
+                    F.date_format("event_timestamp", EXPORT_TS_FORMAT))
+        .withColumn("weather_event_timestamp",
+                    F.date_format("weather_event_timestamp", EXPORT_TS_FORMAT))
+    )
+    # Collect nay CHI thuoc final export layer cho snapshot MVP nho;
+    # moi ETL/matching van la Spark column expressions.
+    rows = ordered.collect()
+    final = _write_snapshot_csv(
+        final, EXPORT_REQUIRED_COLUMNS,
+        [[row[c] for c in EXPORT_REQUIRED_COLUMNS] for row in rows])
 
     return {"output_path": str(final), "output_rows": len(rows),
             "header": list(EXPORT_REQUIRED_COLUMNS),
@@ -753,6 +772,716 @@ def run_spark_etl(output_path=None):
                 "weather_rows": n_weather,
                 "matched_rows": n_matched,
                 "unmatched_rows": n_out - n_matched,
+            }
+        )
+        return meta
+    finally:
+        spark.stop()
+
+
+# ============================================================
+# Phase 6.1 — Road-level analytics (Spark engine, MVP export).
+#
+# - Input: data/processed/combined_data.csv (Phase 5 boundary artifact).
+#   KHONG doc raw traffic/weather, KHONG rerun validation/dedup/join.
+# - Aggregation + ordering DO SPARK (groupBy/count/avg/min/max/sum-when,
+#   khong UDF, khong collect-based aggregation, khong round).
+# - Final single-file serialization tai dung _write_snapshot_csv
+#   (approved MVP driver-side strategy nhu 5.7; khong .write.csv,
+#   khong Pandas).
+# - KHONG hourly/rain-no-rain/dashboard (buoc 6.2+).
+# ============================================================
+
+ROAD_SUMMARY_FILENAME = "road_summary.csv"
+
+# Explicit schema cho Phase 5 artifact (25 cot). Timestamp strings giu
+# StringType (analytics road-level khong can timestamp arithmetic);
+# numerics dung Double/Integer de Spark cast; malformed -> NULL va bi
+# fail-fast o load_processed_data (khong silently coerce).
+def _processed_schema():
+    from pyspark.sql.types import (
+        BooleanType,
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructType,
+    )
+
+    return (
+        StructType()
+        .add("timestamp", StringType(), True)
+        .add("road_name", StringType(), True)
+        .add("lat", DoubleType(), True)
+        .add("lon", DoubleType(), True)
+        .add("current_speed", DoubleType(), True)
+        .add("free_flow_speed", DoubleType(), True)
+        .add("current_travel_time", DoubleType(), True)
+        .add("free_flow_travel_time", DoubleType(), True)
+        .add("confidence", DoubleType(), True)
+        .add("event_timestamp", StringType(), True)
+        .add("congestion_percent", DoubleType(), True)
+        .add("congestion_level", StringType(), True)
+        .add("local_hour", IntegerType(), True)
+        .add("weather_timestamp", StringType(), True)
+        .add("weather_event_timestamp", StringType(), True)
+        .add("weather_lat", DoubleType(), True)
+        .add("weather_lon", DoubleType(), True)
+        .add("temperature", DoubleType(), True)
+        .add("humidity", DoubleType(), True)
+        .add("precipitation", DoubleType(), True)
+        .add("rain", DoubleType(), True)
+        .add("wind_speed", DoubleType(), True)
+        .add("weather_code", IntegerType(), True)
+        .add("weather_matched", BooleanType(), True)
+        .add("weather_time_diff_minutes", DoubleType(), True)
+    )
+
+
+PROCESSED_SCHEMA = _processed_schema()
+
+# Subset cot toi thieu cho road analytics.
+ANALYZE_REQUIRED_COLUMNS = [
+    "road_name",
+    "current_speed",
+    "free_flow_speed",
+    "congestion_percent",
+    "congestion_level",
+]
+
+# Locked congestion labels tu Phase 5.4 (co dau).
+ROAD_CONGESTION_LEVELS = ["Thông thoáng", "Đông", "Ùn tắc", "Ùn tắc nghiêm trọng"]
+
+ROAD_SUMMARY_COLUMNS = [
+    "road_name",
+    "observation_count",
+    "avg_speed",
+    "avg_free_flow_speed",
+    "avg_congestion_percent",
+    "max_congestion_percent",
+    "min_congestion_percent",
+    "clear_count",
+    "busy_count",
+    "congested_count",
+    "severe_count",
+]
+
+
+def default_road_summary_path():
+    """Default output data/processed/road_summary.csv (portable, pathlib)."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent / "data" / "processed" / ROAD_SUMMARY_FILENAME
+
+
+def load_processed_data(spark, path=None):
+    """Doc Phase 5 artifact combined_data.csv voi explicit schema (pure load).
+
+    - Header kiem tra bang stdlib csv (chi dong header, khong aggregate):
+      sai 25 cot/order -> ValueError. Thieu file -> RuntimeError.
+    - Spark doc voi PROCESSED_SCHEMA (header, khong inferSchema).
+    - Fail-fast neu cot analytics-critical bi NULL (do malformed coerce):
+      road_name/current_speed/free_flow_speed/congestion_percent/
+      congestion_level. KHONG sua/drop rows.
+    - Khong tao session/doc raw/goi API. Khong Pandas.
+    """
+    from functools import reduce
+    from pathlib import Path
+
+    from pyspark.sql import functions as F
+
+    target = Path(path) if path is not None else default_processed_path()
+    if not target.is_file():
+        raise RuntimeError(
+            f"Khong tim thay processed artifact: {target}. Chay Phase 5 ETL truoc."
+        )
+
+    import csv as _csv
+
+    with open(target, "r", encoding="utf-8", newline="") as fh:
+        header = next(_csv.reader(fh), None)
+    if header != EXPORT_REQUIRED_COLUMNS:
+        raise ValueError(
+            "Processed header mismatch: got "
+            f"{header!r}, expected {EXPORT_REQUIRED_COLUMNS!r}."
+        )
+
+    df = spark.read.option("header", True).schema(PROCESSED_SCHEMA).csv(str(target))
+
+    critical = list(ANALYZE_REQUIRED_COLUMNS)
+    n_bad = df.filter(
+        reduce(lambda a, b: a | b, (F.col(c).isNull() for c in critical))
+    ).count()
+    if n_bad > 0:
+        raise ValueError(
+            f"Processed analytics columns contain {n_bad} NULL rows "
+            f"(columns={critical}); refusing to coerce malformed values."
+        )
+    return df
+
+
+def analyze_roads(df):
+    """Road-level aggregation bang pure Spark (khong UDF, khong Pandas).
+
+    - Input can toi thieu ANALYZE_REQUIRED_COLUMNS (thieu -> ValueError).
+    - Fail-fast neu co road_name null/empty hoac congestion_level
+      null/unknown (ngoai 4 locked labels): khong tong hop sai lech.
+    - GroupBy road_name: count/avg/min/max + sum(when(...)) cho 4 level
+      counts; giu Double precision, KHONG round (presentation round sau).
+    - Output 11 cot theo ROAD_SUMMARY_COLUMNS (chua order; export order).
+    - Khong session/IO/collect/UDF/API.
+    """
+    from pyspark.sql import functions as F
+
+    missing = [c for c in ANALYZE_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"analyze_roads missing required columns: {missing}. "
+            f"Expected at minimum {ANALYZE_REQUIRED_COLUMNS!r}."
+        )
+
+    n_bad = df.filter(
+        F.col("road_name").isNull()
+        | (F.trim(F.col("road_name")) == "")
+        | F.col("congestion_level").isNull()
+        | ~F.col("congestion_level").isin(ROAD_CONGESTION_LEVELS)
+    ).count()
+    if n_bad > 0:
+        raise ValueError(
+            f"analyze_roads contract violation: {n_bad} rows with "
+            "null/empty road_name or unknown/null congestion_level; "
+            "refusing to produce a misleading summary."
+        )
+
+    grouped = df.groupBy("road_name").agg(
+        F.count("*").alias("observation_count"),
+        F.avg("current_speed").alias("avg_speed"),
+        F.avg("free_flow_speed").alias("avg_free_flow_speed"),
+        F.avg("congestion_percent").alias("avg_congestion_percent"),
+        F.max("congestion_percent").alias("max_congestion_percent"),
+        F.min("congestion_percent").alias("min_congestion_percent"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[0], 1)
+              .otherwise(0)).alias("clear_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[1], 1)
+              .otherwise(0)).alias("busy_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[2], 1)
+              .otherwise(0)).alias("congested_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[3], 1)
+              .otherwise(0)).alias("severe_count"),
+    )
+    return grouped.select(*ROAD_SUMMARY_COLUMNS)
+
+
+def export_road_summary(df, output_path=None):
+    """Export road summary ra single-file CSV (snapshot replacement).
+
+    - Input phai co exact 11 cot theo ROAD_SUMMARY_COLUMNS (sai ->
+      ValueError truoc moi materialization).
+    - ORDERING DO SPARK: avg_congestion_percent DESC, road_name ASC
+      (duong un tac nhat len dau, deterministic).
+    - Serialization qua _write_snapshot_csv (approved MVP driver-side;
+      KHONG .write.csv, KHONG Pandas). Temp sibling + os.replace;
+      loi -> file cu giu nguyen, temp duoc don.
+    - Tra ve metadata (output_path, output_rows, header, export_strategy).
+      Khong session/API. Caller quan ly SparkSession.
+    """
+    from pathlib import Path
+
+    from pyspark.sql import functions as F
+
+    if list(df.columns) != ROAD_SUMMARY_COLUMNS:
+        raise ValueError(
+            "export_road_summary requires exact 11-column analyze_roads output; got "
+            f"{list(df.columns)!r}, expected {ROAD_SUMMARY_COLUMNS!r}."
+        )
+
+    final = Path(output_path) if output_path is not None else default_road_summary_path()
+    ordered = df.orderBy(
+        F.col("avg_congestion_percent").desc(), F.col("road_name").asc()
+    )
+    rows = ordered.collect()
+    final = _write_snapshot_csv(
+        final, ROAD_SUMMARY_COLUMNS,
+        [[row[c] for c in ROAD_SUMMARY_COLUMNS] for row in rows])
+
+    return {"output_path": str(final), "output_rows": len(rows),
+            "header": list(ROAD_SUMMARY_COLUMNS),
+            "export_strategy": "driver_csv_mvp"}
+
+
+def run_road_analytics(output_path=None):
+    """Orchestrate Phase 6.1: load processed -> analyze -> export (fail-fast).
+
+    Doc Phase 5 boundary artifact (KHONG raw, KHONG re-validation/join),
+    aggregate theo road bang Spark, export road_summary.csv. Loi o bat ky
+    stage nao -> raise (khong tao CSV gia). Luon stop session.
+    Tra ve metadata (input_rows/roads/output/sum/top road + avg).
+    Ket qua la descriptive cua collected observations, khong claim causality.
+    """
+    import csv as _csv
+
+    spark = create_spark_session()
+    try:
+        df = load_processed_data(spark)
+        summary = analyze_roads(df)
+        n_in = df.count()
+        meta = export_road_summary(summary, output_path=output_path)
+        total_obs = 0
+        top_road = None
+        top_avg = None
+        with open(meta["output_path"], "r", encoding="utf-8", newline="") as fh:
+            for i, row in enumerate(_csv.DictReader(fh)):
+                total_obs += int(row["observation_count"])
+                if i == 0:
+                    top_road = row["road_name"]
+                    top_avg = float(row["avg_congestion_percent"])
+        meta.update(
+            {
+                "input_rows": n_in,
+                "road_count": meta["output_rows"],
+                "sum_observation_count": total_obs,
+                "top_road": top_road,
+                "top_avg_congestion_percent": top_avg,
+            }
+        )
+        return meta
+    finally:
+        spark.stop()
+
+
+# ============================================================
+# Phase 6.2 — Hourly/time-window analytics (Spark engine, MVP export).
+#
+# - Input: data/processed/combined_data.csv qua load_processed_data()
+#   (KHONG raw, KHONG rerun ETL, KHONG road_summary lam input).
+# - Dung Phase 5 local_hour (Asia/Ho_Chi_Minh, KHONG recompute timezone,
+#   KHONG aggregate theo UTC hour).
+# - Aggregation + ordering DO SPARK (groupBy/count/avg/min/max/sum-when,
+#   khong UDF, khong collect-based aggregation, khong round).
+# - Final single-file serialization qua _write_snapshot_csv
+#   (approved MVP driver-side; khong .write.csv, khong Pandas).
+# - KHONG rain/no-rain/dashboard (buoc 6.3+).
+# ============================================================
+
+HOURLY_SUMMARY_FILENAME = "hourly_summary.csv"
+
+# Subset cot toi thieu cho hourly analytics.
+HOURLY_REQUIRED_COLUMNS = [
+    "local_hour",
+    "current_speed",
+    "free_flow_speed",
+    "congestion_percent",
+    "congestion_level",
+]
+
+HOURLY_SUMMARY_COLUMNS = [
+    "local_hour",
+    "time_window",
+    "observation_count",
+    "avg_speed",
+    "avg_free_flow_speed",
+    "avg_congestion_percent",
+    "max_congestion_percent",
+    "min_congestion_percent",
+    "clear_count",
+    "busy_count",
+    "congested_count",
+    "severe_count",
+]
+
+
+def classify_time_window(hour_col):
+    """Descriptive time-window expression cho local_hour (pure Spark Column).
+
+    Boundaries (khoa): 00-05 Dem; 06-10 Sang cao diem; 11-15 Trua;
+    16-20 Chieu cao diem; 21-23 Toi. Nhan mot Spark Column so nguyen
+    va tra ve when/otherwise Column (khong UDF), de test boundary
+    doc lap voi aggregation.
+    """
+    from pyspark.sql import functions as F
+
+    return (
+        F.when(hour_col <= 5, "Đêm")
+        .when(hour_col <= 10, "Sáng cao điểm")
+        .when(hour_col <= 15, "Trưa")
+        .when(hour_col <= 20, "Chiều cao điểm")
+        .otherwise("Tối")
+    )
+
+
+def default_hourly_summary_path():
+    """Default output data/processed/hourly_summary.csv (portable, pathlib)."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent / "data" / "processed" / HOURLY_SUMMARY_FILENAME
+
+
+def analyze_hourly(df):
+    """Hourly aggregation bang pure Spark (khong UDF, khong Pandas).
+
+    - Input can toi thieu HOURLY_REQUIRED_COLUMNS (thieu -> ValueError).
+    - Fail-fast neu local_hour null hoac ngoai [0, 23] (non-integer da
+      thanh NULL khi doc schema), hoac congestion_level null/unknown
+      (ngoai 4 locked labels): khong tong hop sai lech.
+    - time_window = classify_time_window(local_hour); groupBy
+      (local_hour, time_window): count/avg/min/max + sum(when(...)) cho
+      4 level counts; giu Double precision, KHONG round.
+    - Output 12 cot theo HOURLY_SUMMARY_COLUMNS (chua order; export order
+      local_hour ASC). Chi cac gio quan sat duoc xuat hien (khong tao
+      gio 0-observation). Khong session/IO/collect/UDF/API.
+    """
+    from pyspark.sql import functions as F
+
+    missing = [c for c in HOURLY_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"analyze_hourly missing required columns: {missing}. "
+            f"Expected at minimum {HOURLY_REQUIRED_COLUMNS!r}."
+        )
+
+    n_bad_hour = df.filter(
+        F.col("local_hour").isNull()
+        | (F.col("local_hour") < 0)
+        | (F.col("local_hour") > 23)
+    ).count()
+    if n_bad_hour > 0:
+        raise ValueError(
+            f"analyze_hourly contract violation: {n_bad_hour} rows with "
+            "null or out-of-range local_hour (expected integer 0-23); "
+            "refusing to produce a misleading summary."
+        )
+
+    n_bad_level = df.filter(
+        F.col("congestion_level").isNull()
+        | ~F.col("congestion_level").isin(ROAD_CONGESTION_LEVELS)
+    ).count()
+    if n_bad_level > 0:
+        raise ValueError(
+            f"analyze_hourly contract violation: {n_bad_level} rows with "
+            "unknown/null congestion_level; "
+            "refusing to produce a misleading summary."
+        )
+
+    with_window = df.withColumn(
+        "time_window", classify_time_window(F.col("local_hour"))
+    )
+    grouped = with_window.groupBy("local_hour", "time_window").agg(
+        F.count("*").alias("observation_count"),
+        F.avg("current_speed").alias("avg_speed"),
+        F.avg("free_flow_speed").alias("avg_free_flow_speed"),
+        F.avg("congestion_percent").alias("avg_congestion_percent"),
+        F.max("congestion_percent").alias("max_congestion_percent"),
+        F.min("congestion_percent").alias("min_congestion_percent"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[0], 1)
+              .otherwise(0)).alias("clear_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[1], 1)
+              .otherwise(0)).alias("busy_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[2], 1)
+              .otherwise(0)).alias("congested_count"),
+        F.sum(F.when(F.col("congestion_level") == ROAD_CONGESTION_LEVELS[3], 1)
+              .otherwise(0)).alias("severe_count"),
+    )
+    return grouped.select(*HOURLY_SUMMARY_COLUMNS)
+
+
+def export_hourly_summary(df, output_path=None):
+    """Export hourly summary ra single-file CSV (snapshot replacement).
+
+    - Input phai co exact 12 cot theo HOURLY_SUMMARY_COLUMNS (sai ->
+      ValueError truoc moi materialization).
+    - ORDERING DO SPARK: local_hour ASC (deterministic; khong sort theo
+      congestion, khong rank column).
+    - Serialization qua _write_snapshot_csv (approved MVP driver-side;
+      KHONG .write.csv, KHONG Pandas). Temp sibling + os.replace;
+      loi -> file cu giu nguyen, temp duoc don.
+    - Tra ve metadata (output_path, output_rows, header, export_strategy).
+      Khong session/API. Caller quan ly SparkSession.
+    """
+    from pathlib import Path
+
+    from pyspark.sql import functions as F
+
+    if list(df.columns) != HOURLY_SUMMARY_COLUMNS:
+        raise ValueError(
+            "export_hourly_summary requires exact 12-column analyze_hourly output; got "
+            f"{list(df.columns)!r}, expected {HOURLY_SUMMARY_COLUMNS!r}."
+        )
+
+    final = Path(output_path) if output_path is not None else default_hourly_summary_path()
+    ordered = df.orderBy(F.col("local_hour").asc())
+    rows = ordered.collect()
+    final = _write_snapshot_csv(
+        final, HOURLY_SUMMARY_COLUMNS,
+        [[row[c] for c in HOURLY_SUMMARY_COLUMNS] for row in rows])
+
+    return {"output_path": str(final), "output_rows": len(rows),
+            "header": list(HOURLY_SUMMARY_COLUMNS),
+            "export_strategy": "driver_csv_mvp"}
+
+
+def run_hourly_analytics(output_path=None):
+    """Orchestrate Phase 6.2: load processed -> analyze -> export (fail-fast).
+
+    Doc Phase 5 boundary artifact (KHONG raw, KHONG road_summary lam input),
+    aggregate theo local_hour bang Spark, export hourly_summary.csv. Loi o
+    bat ky stage nao -> raise (khong tao CSV gia). Luon stop session.
+    Tra ve metadata (input_rows/distinct_hours/output/sum/top hours + avg).
+    Ket qua la descriptive cua collected observations ("trong du lieu da
+    thu thap"), khong claim causality hay Hanoi-wide.
+    """
+    import csv as _csv
+
+    spark = create_spark_session()
+    try:
+        df = load_processed_data(spark)
+        summary = analyze_hourly(df)
+        n_in = df.count()
+        meta = export_hourly_summary(summary, output_path=output_path)
+        total_obs = 0
+        top_avg = None
+        top_hours = []
+        with open(meta["output_path"], "r", encoding="utf-8", newline="") as fh:
+            for row in _csv.DictReader(fh):
+                total_obs += int(row["observation_count"])
+                avg = float(row["avg_congestion_percent"])
+                if top_avg is None or avg > top_avg:
+                    top_avg = avg
+                    top_hours = [{
+                        "local_hour": int(row["local_hour"]),
+                        "time_window": row["time_window"],
+                        "observation_count": int(row["observation_count"]),
+                    }]
+                elif avg == top_avg:
+                    top_hours.append({
+                        "local_hour": int(row["local_hour"]),
+                        "time_window": row["time_window"],
+                        "observation_count": int(row["observation_count"]),
+                    })
+        meta.update(
+            {
+                "input_rows": n_in,
+                "distinct_hours": meta["output_rows"],
+                "sum_observation_count": total_obs,
+                "top_hours": top_hours,
+                "top_avg_congestion_percent": top_avg,
+            }
+        )
+        return meta
+    finally:
+        spark.stop()
+
+
+# ============================================================
+# Phase 6.3 — Rain vs no-rain analytics (Spark engine, MVP export).
+#
+# - Input: data/processed/combined_data.csv qua load_processed_data()
+#   (KHONG raw, KHONG road/hourly summary lam input).
+# - Chi dung observations co weather_matched == true; unmatched bi
+#   loai khoi aggregation (KHONG coi la "Khong mua").
+# - rain > 0 -> "Mua"; rain == 0 -> "Khong mua" (khong threshold tu che,
+#   khong dung weather_code/precipitation override).
+# - Aggregation + ordering DO SPARK (filter/groupBy/count/avg/min/max,
+#   khong UDF, khong collect-based aggregation, khong round).
+# - Final single-file serialization qua _write_snapshot_csv
+#   (approved MVP driver-side; khong .write.csv, khong Pandas).
+# - Ket qua la DESCRIPTIVE ASSOCIATION ("trong du lieu da thu thap"),
+#   KHONG causality, KHONG Hanoi-wide.
+# ============================================================
+
+WEATHER_SUMMARY_FILENAME = "weather_summary.csv"
+
+# Subset cot toi thieu cho weather analytics.
+WEATHER_REQUIRED_COLUMNS = [
+    "weather_matched",
+    "rain",
+    "current_speed",
+    "free_flow_speed",
+    "congestion_percent",
+]
+
+# Semantic order hien thi: "Khong mua" truoc, "Mua" sau (explicit sort
+# key, khong dua vao Unicode sorting).
+WEATHER_CONDITIONS = ["Không mưa", "Mưa"]
+
+WEATHER_SUMMARY_COLUMNS = [
+    "weather_condition",
+    "observation_count",
+    "avg_speed",
+    "avg_free_flow_speed",
+    "avg_congestion_percent",
+    "max_congestion_percent",
+    "min_congestion_percent",
+]
+
+
+def classify_rain_condition(rain_col):
+    """Rain classification expression (pure Spark Column, khong UDF).
+
+    rain > 0 -> "Mua"; otherwise -> "Khong mua". Chi ap dung tren
+    matched rows da validate (rain non-null, >= 0), nen otherwise o day
+    nghia la rain == 0. Khong threshold tu che (0.0001 van la Mua),
+    khong weather_code/precipitation override.
+    """
+    from pyspark.sql import functions as F
+
+    return F.when(rain_col > 0, WEATHER_CONDITIONS[1]).otherwise(WEATHER_CONDITIONS[0])
+
+
+def default_weather_summary_path():
+    """Default output data/processed/weather_summary.csv (portable, pathlib)."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent / "data" / "processed" / WEATHER_SUMMARY_FILENAME
+
+
+def analyze_weather_conditions(df):
+    """Rain vs no-rain aggregation bang pure Spark (khong UDF, khong Pandas).
+
+    - Input can toi thieu WEATHER_REQUIRED_COLUMNS (thieu -> ValueError).
+    - weather_matched null -> ValueError (khong suy doan trang thai).
+    - Chi matched rows duoc phan tich; matched validate: current_speed
+      non-null va >= 0, free_flow_speed non-null va > 0,
+      congestion_percent non-null, rain non-null va >= 0. Vi pham ->
+      ValueError (khong clean/drop am tham).
+    - Zero matched rows -> ValueError (khong export summary gay hieu lam).
+    - Unmatched rows (false, ke ca rain NULL) la hop le: bi loai khoi
+      aggregation, KHONG thanh "Khong mua".
+    - GroupBy weather_condition: count/avg/min/max; giu Double precision,
+      KHONG round. Output 7 cot theo WEATHER_SUMMARY_COLUMNS (chua order;
+      export order). Chi condition quan sat duoc xuat hien. Khong
+      session/IO/collect/UDF/API.
+    """
+    from pyspark.sql import functions as F
+
+    missing = [c for c in WEATHER_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"analyze_weather_conditions missing required columns: {missing}. "
+            f"Expected at minimum {WEATHER_REQUIRED_COLUMNS!r}."
+        )
+
+    n_null_matched = df.filter(F.col("weather_matched").isNull()).count()
+    if n_null_matched > 0:
+        raise ValueError(
+            f"analyze_weather_conditions contract violation: {n_null_matched} rows "
+            "with null weather_matched; refusing to guess match state."
+        )
+
+    matched = df.filter(F.col("weather_matched") == True)
+    n_matched = matched.count()
+    if n_matched == 0:
+        raise ValueError(
+            "analyze_weather_conditions: no matched weather observations "
+            "available for analysis; refusing to export a misleading summary."
+        )
+
+    n_bad = matched.filter(
+        F.col("current_speed").isNull()
+        | (F.col("current_speed") < 0)
+        | F.col("free_flow_speed").isNull()
+        | (F.col("free_flow_speed") <= 0)
+        | F.col("congestion_percent").isNull()
+        | F.col("rain").isNull()
+        | (F.col("rain") < 0)
+    ).count()
+    if n_bad > 0:
+        raise ValueError(
+            f"analyze_weather_conditions contract violation: {n_bad} matched rows "
+            "with null/negative speed, non-positive free-flow speed, null "
+            "congestion, or null/negative rain; refusing to coerce."
+        )
+
+    with_condition = matched.withColumn(
+        "weather_condition", classify_rain_condition(F.col("rain"))
+    )
+    grouped = with_condition.groupBy("weather_condition").agg(
+        F.count("*").alias("observation_count"),
+        F.avg("current_speed").alias("avg_speed"),
+        F.avg("free_flow_speed").alias("avg_free_flow_speed"),
+        F.avg("congestion_percent").alias("avg_congestion_percent"),
+        F.max("congestion_percent").alias("max_congestion_percent"),
+        F.min("congestion_percent").alias("min_congestion_percent"),
+    )
+    return grouped.select(*WEATHER_SUMMARY_COLUMNS)
+
+
+def export_weather_summary(df, output_path=None):
+    """Export weather summary ra single-file CSV (snapshot replacement).
+
+    - Input phai co exact 7 cot theo WEATHER_SUMMARY_COLUMNS (sai ->
+      ValueError truoc moi materialization).
+    - ORDERING DO SPARK: explicit semantic sort key ("Khong mua" = 0,
+      "Mua" = 1), drop helper truoc export; khong dua Unicode sort.
+    - Serialization qua _write_snapshot_csv (approved MVP driver-side;
+      KHONG .write.csv, KHONG Pandas). Temp sibling + os.replace;
+      loi -> file cu giu nguyen, temp duoc don.
+    - Tra ve metadata (output_path, output_rows, header, export_strategy).
+      Khong session/API. Caller quan ly SparkSession.
+    """
+    from pathlib import Path
+
+    from pyspark.sql import functions as F
+
+    if list(df.columns) != WEATHER_SUMMARY_COLUMNS:
+        raise ValueError(
+            "export_weather_summary requires exact 7-column analyze_weather_conditions "
+            f"output; got {list(df.columns)!r}, expected {WEATHER_SUMMARY_COLUMNS!r}."
+        )
+
+    final = Path(output_path) if output_path is not None else default_weather_summary_path()
+    ordered = (
+        df.withColumn(
+            "__worder",
+            F.when(F.col("weather_condition") == WEATHER_CONDITIONS[0], 0).otherwise(1),
+        )
+        .orderBy(F.col("__worder").asc())
+        .drop("__worder")
+    )
+    rows = ordered.collect()
+    final = _write_snapshot_csv(
+        final, WEATHER_SUMMARY_COLUMNS,
+        [[row[c] for c in WEATHER_SUMMARY_COLUMNS] for row in rows])
+
+    return {"output_path": str(final), "output_rows": len(rows),
+            "header": list(WEATHER_SUMMARY_COLUMNS),
+            "export_strategy": "driver_csv_mvp"}
+
+
+def run_weather_analytics(output_path=None):
+    """Orchestrate Phase 6.3: load processed -> analyze -> export (fail-fast).
+
+    Doc Phase 5 boundary artifact (KHONG raw, KHONG summary khac lam input),
+    so sanh Mua/Khong mua bang Spark tren matched observations, export
+    weather_summary.csv. Loi o bat ky stage nao -> raise (khong tao CSV gia).
+    Luon stop session. Tra ve metadata (input/matched/unmatched/analyzed/
+    output rows + path). Ket qua la descriptive association, khong causality.
+    """
+    import csv as _csv
+
+    from pyspark.sql import functions as F
+
+    spark = create_spark_session()
+    try:
+        df = load_processed_data(spark)
+        summary = analyze_weather_conditions(df)
+        n_in = df.count()
+        n_matched = df.filter(F.col("weather_matched") == True).count()
+        n_unmatched = df.filter(F.col("weather_matched") == False).count()
+        meta = export_weather_summary(summary, output_path=output_path)
+        conditions = {}
+        with open(meta["output_path"], "r", encoding="utf-8", newline="") as fh:
+            for row in _csv.DictReader(fh):
+                conditions[row["weather_condition"]] = {
+                    "observation_count": int(row["observation_count"]),
+                    "avg_speed": float(row["avg_speed"]),
+                    "avg_congestion_percent": float(row["avg_congestion_percent"]),
+                }
+        meta.update(
+            {
+                "input_rows": n_in,
+                "matched_weather_rows": n_matched,
+                "unmatched_weather_rows": n_unmatched,
+                "analyzed_rows": n_matched,
+                "conditions": conditions,
             }
         )
         return meta

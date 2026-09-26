@@ -261,7 +261,7 @@ Acceptance criteria:
 - [ ] Có backup dataset dùng cho demo khi mất mạng/API (chuyển sang Phase 10 Testing & Demo — phase này đã yêu cầu backup dataset).
 - [ ] Tài liệu ngắn ghi cách chạy collector để lấy thêm dữ liệu (chuyển sang Phase 10 cùng README demo).
 
-### Phase 5 — Spark ETL (CURRENT_PHASE — ĐANG THỰC HIỆN)
+### Phase 5 — Spark ETL (HOÀN THÀNH — final verification 5.8 PASS)
 
 Nội dung (bắt buộc dùng PySpark):
 
@@ -274,7 +274,7 @@ Acceptance criteria:
 - [ ] Sinh đủ 3 file `processed/road_summary.csv`, `hourly_summary.csv`, `weather_summary.csv`.
 - [ ] Chạy lại nhiều lần cho kết quả nhất quán (idempotent ở mức aggregation).
 
-### Phase 6 — Spark Analytics
+### Phase 6 — Spark Analytics (HOÀN THÀNH — final verification 6.4 PASS)
 
 Nội dung:
 
@@ -287,7 +287,7 @@ Acceptance criteria:
 - [ ] Có thể giải thích truy vấn/transform cho giảng viên.
 - [ ] Không thay Spark bằng Pandas cho analytics.
 
-### Phase 7 — Streamlit Dashboard
+### Phase 7 — Streamlit Dashboard (CURRENT_PHASE — ĐANG THỰC HIỆN)
 
 Nội dung:
 
@@ -375,15 +375,26 @@ Acceptance criteria:
 - Buoc 5.4 floating-point verification note (Option B): congestion formula remains unclamped Double arithmetic; formula verification uses floating-point tolerance (vd 80/100 ≈ 20, khong doi exact 20.0); classification thresholds tested independently using explicit congestion values via classify_congestion() helper (extraction, khong doi semantics); no epsilon/rounding/clamping introduced.
 - Buoc 5.5 weather dedup PASS: deduplicate_weather() key = (road_name, event_timestamp) (shared timestamps across roads la hop le); conflicting duplicates chon canonical row theo fixed ASC order vi raw khong co ingestion-order metadata; production 10 -> 10 (0 duplicate groups); raw CSV non-destructive.
 - Buoc 5.6 temporal join PASS: traffic-weather join theo same road + nearest weather (<=60 min inclusive, equal-distance tie prefers past, deterministic final ordering); unmatched traffic preserved (LEFT); toi da 1 weather/observation; production 15 -> 15 (matched 15/15, diff 4.4-44.65 min); exact duplicate traffic fails fast vi raw schema lacks ingestion identity.
+- Buoc 5.7 processed export PASS (runtime verified 5.7b): base snapshot la data/processed/combined_data.csv (15 rows, deterministic Spark orderBy); Spark thuc hien moi ETL/transform/join/orderBy + UTC timestamp format; Windows local thieu Hadoop/winutils nen snapshot MVP nho duoc serialize driver-side bang Python stdlib csv (khong .write.csv, khong Pandas, non-scalable, chi cho demo mon hoc); snapshot replacement nguyen tu qua temp sibling + os.replace; raw inputs immutable.
+- Phase 5 closeout PASS (Buoc 5.8 final audit, 0 Spark rerun, 0 API): 22 checks PASS — code compile/import safe, raw schemas 9/12 hop le va byte-exact, combined_data.csv 25 cot / 15 rows / matched 15/15, congestion formula + classification + local_hour + UTC instants + diff + deterministic order + road coverage 5/5 deu PASS, khong lan Phase 6; output contract Phase 5 la row-level combined_data.csv (thay the phac thao 3-file cu).
+- Buoc 6.1 road-level analytics PASS: Phase 6 tieu thu combined_data.csv lam ETL boundary (khong doc raw, khong rerun join); aggregation + ordering DO SPARK (groupBy/count/avg/min/max/sum-when, khong UDF/Pandas/round); avg_congestion_percent la descriptive comparison metric (khong claim causality); output data/processed/road_summary.csv (5 roads, sum obs 15/15, top Truong Chinh ~39.64); single-file serialization tai dung approved MVP driver-side temp+os.replace.
+- Buoc 6.2 hourly analytics PASS: dung Phase 5 local_hour (Asia/Ho_Chi_Minh, khong recompute timezone, khong aggregate UTC hour); fixed time-window boundaries (00-05 Dem, 06-10 Sang cao diem, 11-15 Trua, 16-20 Chieu cao diem, 21-23 Toi); aggregation + ordering DO SPARK (groupBy local_hour, khong UDF/Pandas/round, fail-fast hour/level invalid); output data/processed/hourly_summary.csv (2 observed hours 11/13, sum obs 15/15, top hour 11 Trua ~35.19); driver serialization chi final MVP output.
+- Buoc 6.3 rain-vs-no-rain PASS: chi dung matched weather observations (unmatched excluded, never No-rain); rain > 0 = Mua, rain == 0 = Khong mua (khong threshold, khong weather_code/precipitation override); descriptive association only (khong causality); aggregation DO SPARK (filter/groupBy, khong UDF/Pandas/round, fail-fast rain/match invalid); output data/processed/weather_summary.csv (Khong mua 13 obs avg ~26.15/~35.57, Mua 2 obs avg 37.5/~20.43); final serialization approved driver-side MVP.
+- Phase 6 closeout PASS (Buoc 6.4 final audit, 0 Spark rerun, 0 API): static + 3 artifact audits + independent reconciliations (road/hourly/weather) deu PASS — combined 15 == road_sum 15 == hourly_sum 15, weather_sum 15 == matched 15, roads 5/5/5 consistent, ca 5 locked analyses co output, descriptive-only, processed dir dung 4 files, moi hash unchanged, khong lan Phase 7.
+- Buoc 7.1 dashboard foundation PASS: Streamlit/pandas chi o presentation layer, tieu thu 4 processed snapshots (khong Spark/API, khong ghi/sua CSV); page wide + cached loader + file/schema/empty guards (error + stop, khong tu tao artifact); sidebar thong tin + snapshot freshness Asia/Ho_Chi_Minh (khong claim live); smoke test server 200 + AppTest headless khong exception; moi hash unchanged.
+- Buoc 7.2 overview KPI PASS: 6 KPI tu processed snapshot (Tuyen duong / Quan sat / Toc do TB / Un tac TB / Ghep thoi tiet / Du lieu moi nhat dd/mm/YYYY HH:MM); pandas aggregation presentation-level (khong recreate Spark analytics); boolean weather_matched chuan hoa strict (string "False" khong truthy); reconciliation canh bao thay vi crash; highlight tuyen un tac nhat + dong weather mo ta collected-data (khong delta, khong live claim); moi hash unchanged.
+- Buoc 7.3 Folium map PASS: 1 latest processed observation/road (deterministic event+secondary ordering, khong dua input order); center tu mean toa do markers hien co (zoom 12); mau marker theo Phase 5 congestion_level (xanh/cam/do/do dam); popup escape HTML, gio Hanoi dd/mm/YYYY HH:MM, weather chi khi matched; legend toi gian; map la snapshot (khong live); production 5 markers hop le; moi hash unchanged.
+- Buoc 7.4 Plotly charts PASS: 5 charts (2 road hbar + 1 hourly line+markers + 2 weather bars) tieu thu truc tiep Spark summaries (khong re-aggregate combined, khong raw/Spark/API); ordering deterministic (road avg DESC+name, hour ASC, weather semantic); khong tao gio/condition thieu; km/h va % tren truc rieng; weather descriptive non-causal; helpers pure co validation + khong mutate source; dung width='stretch' (khong deprecated use_container_width); moi hash unchanged.
+- Buoc 7.5 detail table + filters PASS: 2 multiselect (tuyen alpha, trang thai semantic hien co) chi loc bang chi tiet (exact AND, copy, default all); KPI/map/charts giu snapshot day du (AppTest: loc Cau Giay -> 3 rows, KPI khong doi; empty -> thong bao than thien); bang 8 cot, event DESC + road ASC, gio Hanoi dd/mm/YYYY, weather unmatched hien "Khong co du lieu" (khong thanh 0/khong mua); st.dataframe read-only (khong editor/download); moi hash unchanged.
 
 ---
 
 ## 8. Trạng thái hiện tại
 
 ```text
-CURRENT_PHASE = 5
-LAST_COMPLETED_PHASE = 4
-NEXT_PHASE = 6
+CURRENT_PHASE = 7
+LAST_COMPLETED_PHASE = 6
+NEXT_PHASE = 8
 ```
 
 - Phase 0: HOÀN THÀNH.
@@ -391,7 +402,9 @@ NEXT_PHASE = 6
 - Phase 2 (TomTom Traffic): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
 - Phase 3 (Weather Integration): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
 - Phase 4 (Historical Data Collection): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
-- Phase 5 (Spark ETL): ĐANG THỰC HIỆN.
-- Phase 6–10: CHƯA LÀM.
-- Không được triển khai Phase 6 trước khi Phase 5 được người dùng xác nhận hoàn thành.
+- Phase 5 (Spark ETL): HOÀN THÀNH — final verification 5.8 PASS (22 checks, 0 Spark rerun, 0 API).
+- Phase 6 (Spark Analytics): HOÀN THÀNH — final verification 6.4 PASS (static + reconciliations, 0 Spark rerun, 0 API).
+- Phase 7 (Streamlit Dashboard): ĐANG THỰC HIỆN (CURRENT_PHASE, chưa triển khai code).
+- Phase 8–10: CHƯA LÀM.
+- Không được triển khai Phase 8 trước khi Phase 7 được người dùng xác nhận hoàn thành.
 - Không tự chuyển `CURRENT_PHASE`; việc chuyển phase cần người dùng xác nhận.
