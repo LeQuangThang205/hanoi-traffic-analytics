@@ -1,10 +1,9 @@
-"""Phase 7.1-7.2 — Streamlit Dashboard (presentation layer only).
+"""Phase 7.1-7.6 — Streamlit Dashboard (presentation layer only).
 
 Doc 4 processed snapshots cua Phase 5/6 va hien thi thong tin co ban + KPI
 tong quan. KHONG Spark/pyspark, KHONG rerun ETL/analytics, KHONG
 TomTom/Open-Meteo, KHONG ghi/sua bat ky CSV nao (read-only). Pandas chi dung
 o presentation layer cho du lieu nho (KPI don gian, khong thay Spark).
-Map / charts / filters / road management chua lam.
 """
 
 from pathlib import Path
@@ -62,6 +61,149 @@ CONGESTION_COLORS = {
     "Ùn tắc": "red",
     "Ùn tắc nghiêm trọng": "darkred",
 }
+
+KPI_ICONS = {
+    "n_roads": "🛣️",
+    "n_obs": "📊",
+    "avg_speed": "🚗",
+    "avg_congestion": "🚦",
+    "matched_pct": "🌦️",
+    "latest_hanoi": "🕐",
+}
+
+# ---- CSS cho visual polish (scoped, minimal) ----
+DASHBOARD_CSS = """
+<style>
+/* Reduce top padding */
+.block-container {
+    padding-top: 1.5rem !important;
+}
+
+/* KPI card styling */
+.kpi-card {
+    background: #fafafa;
+    border: 1px solid #e8e8e8;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.5rem;
+    transition: box-shadow 0.2s ease;
+}
+.kpi-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.kpi-label {
+    font-size: 0.8rem;
+    color: #666;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.25rem;
+}
+.kpi-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #1a1a1a;
+    line-height: 1.3;
+}
+.kpi-icon {
+    font-size: 1.2rem;
+    margin-right: 0.5rem;
+}
+
+/* Section heading */
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+}
+.section-header h2 {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+.section-icon {
+    font-size: 1.3rem;
+}
+.section-caption {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: -0.25rem;
+    margin-bottom: 1rem;
+}
+
+/* Insight callout cards */
+.insight-card {
+    background: #f8f9fa;
+    border: 1px solid #e8e8e8;
+    border-left: 4px solid #3b82f6;
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+}
+.insight-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #3b82f6;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.35rem;
+}
+.insight-content {
+    font-size: 0.95rem;
+    color: #333;
+    line-height: 1.5;
+}
+
+/* Sidebar compact */
+.sidebar-metric {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    font-size: 0.9rem;
+}
+.sidebar-metric-icon {
+    font-size: 1.1rem;
+}
+.sidebar-divider {
+    border-top: 1px solid #e8e8e8;
+    margin: 0.75rem 0;
+}
+
+/* Detail table spacing */
+.detail-count {
+    font-size: 0.85rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+}
+
+/* Chart containers */
+.chart-container {
+    background: transparent;
+}
+
+/* Divider */
+.hr-subtle {
+    border: none;
+    border-top: 1px solid #e8e8e8;
+    margin: 1.5rem 0;
+}
+
+/* Map container */
+.map-container {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #e8e8e8;
+}
+</style>
+"""
+
+def inject_css():
+    """Inject scoped dashboard CSS."""
+    st.markdown(DASHBOARD_CSS, unsafe_allow_html=True)
 
 
 def find_missing_files(paths=None):
@@ -594,6 +736,8 @@ def main():
         layout="wide",
     )
 
+    inject_css()
+
     st.title("Phân tích giao thông Hà Nội")
     st.caption(
         "Quan trắc giao thông kết hợp thời tiết tại Hà Nội — "
@@ -646,30 +790,28 @@ def main():
         )
         st.stop()
     event_hanoi = to_hanoi(event_utc)
+    latest_hanoi = event_hanoi.max()
 
     # ---- Sidebar: thong tin du lieu (read-only) ----
     st.sidebar.header("Thông tin dữ liệu")
     n_obs = len(combined_df)
     n_roads = int(road_df["road_name"].nunique()) if not road_df.empty else 0
     n_matched = int(matched_mask(combined_df).sum())
-    st.sidebar.write(f"Số quan trắc giao thông: {n_obs}")
-    st.sidebar.write(f"Số tuyến đường: {n_roads}")
-    st.sidebar.write(f"Số quan trắc ghép được thời tiết: {n_matched}")
-    st.sidebar.write(
-        "Khoảng thời gian quan sát (giờ Hà Nội): "
-        f"{event_hanoi.min().strftime('%Y-%m-%d %H:%M')} → "
-        f"{event_hanoi.max().strftime('%Y-%m-%d %H:%M')}"
-    )
-
-    # ---- Data freshness: snapshot, KHONG phai live ----
-    latest_hanoi = event_hanoi.max()
-    st.sidebar.write(
-        "Cập nhật dữ liệu gần nhất (snapshot đã xử lý, không phải trực tiếp): "
-        f"{latest_hanoi.strftime('%Y-%m-%d %H:%M')} (giờ Hà Nội)"
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">📊</span>Số quan trắc: {n_obs}</div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🛣️</span>Số tuyến: {n_roads}</div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🌦️</span>Ghép thời tiết: {n_matched}</div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">📅</span>{event_hanoi.min().strftime('%Y-%m-%d %H:%M')} → {event_hanoi.max().strftime('%Y-%m-%d %H:%M')}</div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🕐</span>Cập nhật: {latest_hanoi.strftime('%Y-%m-%d %H:%M')} (giờ HN)</div>
+        """,
+        unsafe_allow_html=True,
     )
 
     # ---- Tong quan: 6 KPI tu snapshot (khong delta, khong live claim) ----
-    st.header("Tổng quan")
+    st.markdown('<div class="section-header"><span class="section-icon">📈</span><h2>Tổng quan</h2></div>', unsafe_allow_html=True)
     try:
         metrics = calculate_overview_metrics(
             combined_df, road_df, hourly_df, weather_df, event_hanoi
@@ -680,41 +822,72 @@ def main():
     for warning in metrics["warnings"]:
         st.warning(warning)
 
-    row1 = st.columns(4)
-    row1[0].metric("Tuyến đường", f"{metrics['n_roads']}")
-    row1[1].metric("Quan sát", f"{metrics['n_obs']}")
-    row1[2].metric("Tốc độ TB", f"{metrics['avg_speed']:.1f} km/h")
-    row1[3].metric("Ùn tắc TB", f"{metrics['avg_congestion']:.1f}%")
-    row2 = st.columns(2)
-    row2[0].metric("Ghép thời tiết", f"{metrics['matched_pct']:.1f}%")
-    row2[1].metric(
-        "Dữ liệu mới nhất",
-        metrics["latest_hanoi"].strftime("%d/%m/%Y %H:%M"),
-    )
+    kpi_cards = [
+        (KPI_ICONS["n_roads"], "Tuyến đường", str(metrics['n_roads'])),
+        (KPI_ICONS["n_obs"], "Quan sát", str(metrics['n_obs'])),
+        (KPI_ICONS["avg_speed"], "Tốc độ TB", f"{metrics['avg_speed']:.1f} km/h"),
+        (KPI_ICONS["avg_congestion"], "Ùn tắc TB", f"{metrics['avg_congestion']:.1f}%"),
+        (KPI_ICONS["matched_pct"], "Ghép thời tiết", f"{metrics['matched_pct']:.1f}%"),
+        (KPI_ICONS["latest_hanoi"], "Dữ liệu mới nhất", metrics["latest_hanoi"].strftime("%d/%m/%Y %H:%M")),
+    ]
+    cols = st.columns(6)
+    for i, (icon, label, value) in enumerate(kpi_cards):
+        with cols[i]:
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                    <div class="kpi-label"><span class="kpi-icon">{icon}</span>{label}</div>
+                    <div class="kpi-value">{value}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
     st.caption("Các chỉ số được tính từ snapshot dữ liệu đã xử lý gần nhất.")
 
     if metrics["top_road"] is not None:
-        st.write(
-            "Tuyến có mức ùn tắc trung bình cao nhất trong dữ liệu đã thu thập: "
-            f"{metrics['top_road']['road_name']} "
-            f"({metrics['top_road']['avg_congestion_percent']:.1f}%)."
+        st.markdown(
+            f"""
+            <div class="insight-card">
+                <div class="insight-title">Tuyến ùn tắc nhất</div>
+                <div class="insight-content">
+                    Tuyến có mức ùn tắc trung bình cao nhất trong dữ liệu đã thu thập: 
+                    {metrics['top_road']['road_name']} 
+                    ({metrics['top_road']['avg_congestion_percent']:.1f}%).
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     weather_counts = metrics["weather_counts"]
     if "Không mưa" in weather_counts and "Mưa" in weather_counts:
-        st.write(
-            "Điều kiện thời tiết trong dữ liệu: "
-            f"{weather_counts['Không mưa']} quan sát không mưa, "
-            f"{weather_counts['Mưa']} quan sát mưa."
+        st.markdown(
+            f"""
+            <div class="insight-card">
+                <div class="insight-title">Điều kiện thời tiết</div>
+                <div class="insight-content">
+                    {weather_counts['Không mưa']} quan sát không mưa, 
+                    {weather_counts['Mưa']} quan sát mưa.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
     elif weather_counts:
         only_name, only_count = next(iter(weather_counts.items()))
-        st.write(
-            "Điều kiện thời tiết trong dữ liệu: "
-            f"{only_count} quan sát {only_name.lower()}."
+        st.markdown(
+            f"""
+            <div class="insight-card">
+                <div class="insight-title">Điều kiện thời tiết</div>
+                <div class="insight-content">
+                    {only_count} quan sát {only_name.lower()}.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.header("Bản đồ giao thông")
+    st.markdown('<div class="section-header"><span class="section-icon">🗺️</span><h2>Bản đồ giao thông</h2></div>', unsafe_allow_html=True)
     latest_df = get_latest_road_observations(combined_df, event_utc)
     valid_df, invalid_roads = validate_map_coordinates(latest_df)
     if invalid_roads:
@@ -743,7 +916,7 @@ def main():
             "màu sắc thể hiện trạng thái ùn tắc của quan sát đó (không phải trực tiếp)."
         )
 
-    st.header("Phân tích theo tuyến đường")
+    st.markdown('<div class="section-header"><span class="section-icon">🛣️</span><h2>Phân tích theo tuyến đường</h2></div>', unsafe_allow_html=True)
     try:
         speed_df, congestion_df = prepare_road_chart_data(road_df)
     except ValueError as exc:
@@ -803,7 +976,7 @@ def main():
         )
         st.plotly_chart(fig_cong, width="stretch")
 
-    st.header("Phân tích theo thời gian")
+    st.markdown('<div class="section-header"><span class="section-icon">⏰</span><h2>Phân tích theo thời gian</h2></div>', unsafe_allow_html=True)
     try:
         hourly_chart_df = prepare_hourly_chart_data(hourly_df)
     except ValueError as exc:
@@ -836,7 +1009,7 @@ def main():
     st.plotly_chart(fig_hourly, width="stretch")
     st.caption("Chỉ hiển thị các giờ có quan sát trong snapshot dữ liệu.")
 
-    st.header("Giao thông và thời tiết")
+    st.markdown('<div class="section-header"><span class="section-icon">🌦️</span><h2>Giao thông và thời tiết</h2></div>', unsafe_allow_html=True)
     try:
         weather_chart_df = prepare_weather_chart_data(weather_df)
     except ValueError as exc:
@@ -910,7 +1083,7 @@ def main():
         "quan hệ nhân quả giữa thời tiết và giao thông."
     )
 
-    st.header("Chi tiết quan sát")
+    st.markdown('<div class="section-header"><span class="section-icon">📋</span><h2>Chi tiết quan sát</h2></div>', unsafe_allow_html=True)
     st.caption(
         "Bộ lọc bên dưới chỉ áp dụng cho bảng chi tiết, không thay đổi "
         "các KPI, bản đồ hoặc biểu đồ tổng hợp phía trên."

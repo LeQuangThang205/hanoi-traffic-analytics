@@ -386,15 +386,16 @@ Acceptance criteria:
 - Buoc 7.3 Folium map PASS: 1 latest processed observation/road (deterministic event+secondary ordering, khong dua input order); center tu mean toa do markers hien co (zoom 12); mau marker theo Phase 5 congestion_level (xanh/cam/do/do dam); popup escape HTML, gio Hanoi dd/mm/YYYY HH:MM, weather chi khi matched; legend toi gian; map la snapshot (khong live); production 5 markers hop le; moi hash unchanged.
 - Buoc 7.4 Plotly charts PASS: 5 charts (2 road hbar + 1 hourly line+markers + 2 weather bars) tieu thu truc tiep Spark summaries (khong re-aggregate combined, khong raw/Spark/API); ordering deterministic (road avg DESC+name, hour ASC, weather semantic); khong tao gio/condition thieu; km/h va % tren truc rieng; weather descriptive non-causal; helpers pure co validation + khong mutate source; dung width='stretch' (khong deprecated use_container_width); moi hash unchanged.
 - Buoc 7.5 detail table + filters PASS: 2 multiselect (tuyen alpha, trang thai semantic hien co) chi loc bang chi tiet (exact AND, copy, default all); KPI/map/charts giu snapshot day du (AppTest: loc Cau Giay -> 3 rows, KPI khong doi; empty -> thong bao than thien); bang 8 cot, event DESC + road ASC, gio Hanoi dd/mm/YYYY, weather unmatched hien "Khong co du lieu" (khong thanh 0/khong mua); st.dataframe read-only (khong editor/download); moi hash unchanged.
+- Buoc 7.6 final closeout PASS: Phase 7 acceptance passed; dashboard remains processed-snapshot presentation layer; 6 KPI + Folium map + 5 Plotly charts + isolated detail filters/table verified; Spark executions = 0; TomTom requests = 0; Open-Meteo requests = 0; source/processed artifacts remained byte-identical; temporary audit artifacts removed.
 
 ---
 
 ## 8. Trạng thái hiện tại
 
 ```text
-CURRENT_PHASE = 7
-LAST_COMPLETED_PHASE = 6
-NEXT_PHASE = 8
+CURRENT_PHASE = 8
+LAST_COMPLETED_PHASE = 7
+NEXT_PHASE = 9
 ```
 
 - Phase 0: HOÀN THÀNH.
@@ -404,7 +405,8 @@ NEXT_PHASE = 8
 - Phase 4 (Historical Data Collection): HOÀN THÀNH — đã được người dùng xác nhận (final verification PASS).
 - Phase 5 (Spark ETL): HOÀN THÀNH — final verification 5.8 PASS (22 checks, 0 Spark rerun, 0 API).
 - Phase 6 (Spark Analytics): HOÀN THÀNH — final verification 6.4 PASS (static + reconciliations, 0 Spark rerun, 0 API).
-- Phase 7 (Streamlit Dashboard): ĐANG THỰC HIỆN (CURRENT_PHASE, chưa triển khai code).
-- Phase 8–10: CHƯA LÀM.
-- Không được triển khai Phase 8 trước khi Phase 7 được người dùng xác nhận hoàn thành.
+- Phase 7 (Streamlit Dashboard): HOÀN THÀNH — final verification 7.6 PASS (audit + closeout).
+- Phase 8 (Road Management): CURRENT / IN PROGRESS.
+- Phase 9–10: CHƯA LÀM.
+- Không được triển khai Phase 9 trước khi Phase 8 được người dùng xác nhận hoàn thành.
 - Không tự chuyển `CURRENT_PHASE`; việc chuyển phase cần người dùng xác nhận.
