@@ -1290,7 +1290,9 @@ def run_hourly_analytics(output_path=None):
 WEATHER_SUMMARY_FILENAME = "weather_summary.csv"
 
 # Subset cot toi thieu cho weather analytics.
-WEATHER_REQUIRED_COLUMNS = [
+# (Ten rieng biet WEATHER_REQUIRED_COLUMNS raw cua Phase 5.3: fix shadowing
+# 9.1C — global nay tung ghi de raw contract tai runtime.)
+WEATHER_ANALYTICS_REQUIRED_COLUMNS = [
     "weather_matched",
     "rain",
     "current_speed",
@@ -1336,7 +1338,7 @@ def default_weather_summary_path():
 def analyze_weather_conditions(df):
     """Rain vs no-rain aggregation bang pure Spark (khong UDF, khong Pandas).
 
-    - Input can toi thieu WEATHER_REQUIRED_COLUMNS (thieu -> ValueError).
+    - Input can toi thieu WEATHER_ANALYTICS_REQUIRED_COLUMNS (thieu -> ValueError).
     - weather_matched null -> ValueError (khong suy doan trang thai).
     - Chi matched rows duoc phan tich; matched validate: current_speed
       non-null va >= 0, free_flow_speed non-null va > 0,
@@ -1352,11 +1354,11 @@ def analyze_weather_conditions(df):
     """
     from pyspark.sql import functions as F
 
-    missing = [c for c in WEATHER_REQUIRED_COLUMNS if c not in df.columns]
+    missing = [c for c in WEATHER_ANALYTICS_REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(
             f"analyze_weather_conditions missing required columns: {missing}. "
-            f"Expected at minimum {WEATHER_REQUIRED_COLUMNS!r}."
+            f"Expected at minimum {WEATHER_ANALYTICS_REQUIRED_COLUMNS!r}."
         )
 
     n_null_matched = df.filter(F.col("weather_matched").isNull()).count()

@@ -15,6 +15,11 @@ import streamlit as st
 from branca.element import MacroElement, Template
 from streamlit_folium import st_folium
 
+from config import HANOI_ROAD_CATALOG, find_catalog_entry
+from utils import road_manager
+
+import data_update
+
 BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
 
@@ -729,6 +734,301 @@ def build_traffic_map(latest_df, event_hanoi):
     return traffic_map, count, center
 
 
+ROAD_FLASH_KEY = "road_flash"
+
+
+def _set_road_flash(kind, message):
+    """Luu flash message de hien sau rerun (session_state toi thieu)."""
+    st.session_state[ROAD_FLASH_KEY] = (kind, message)
+
+
+def _show_road_flash():
+    """Hien flash message trong sidebar 1 lan roi xoa (pure UI)."""
+    flash = st.session_state.pop(ROAD_FLASH_KEY, None)
+    if flash is None:
+        return
+    kind, message = flash
+    if kind == "success":
+        st.sidebar.success(message)
+    else:
+        st.sidebar.error(message)
+
+
+def available_catalog_roads(catalog_entries, monitored_names):
+    """Ten catalog CHUA duoc theo doi, giu nguyen thu tu catalog (pure).
+
+    So sanh trim + case-insensitive (tuong thich road_manager duplicate
+    protection). Dung cho dropdown Add (khong hien tuyen da co).
+    """
+    monitored = {str(n).strip().lower() for n in (monitored_names or [])}
+    return [
+        str(e["road_name"])
+        for e in (catalog_entries or [])
+        if str(e["road_name"]).strip().lower() not in monitored
+    ]
+
+
+def _handle_add_road(selected_name):
+    """Xu ly submit form them tuyen tu catalog dropdown.
+
+    Lay (road_name, lat, lon) tu catalog roi goi road_manager.add_road()
+    (khong open/write CSV truc tiep, khong nhap tay toa do).
+    road_manager van la lop cuoi validation/duplicate/atomic write.
+    """
+    entry = find_catalog_entry(selected_name)
+    if entry is None:
+        _set_road_flash(
+            "error", "Tuyến đã chọn không có trong danh mục."
+        )
+        st.rerun()
+    try:
+        road_manager.add_road(entry["road_name"], entry["lat"], entry["lon"])
+    except road_manager.DuplicateRoadError:
+        _set_road_flash("error", "Tuyến này đã có trong danh sách theo dõi.")
+        st.rerun()
+    except road_manager.ValidationError:
+        _set_road_flash(
+            "error", "Dữ liệu danh mục không hợp lệ, không thể thêm tuyến."
+        )
+        st.rerun()
+    except road_manager.RoadManagerError as exc:
+        _set_road_flash("error", f"Không thêm được tuyến: {exc}")
+        st.rerun()
+    st.session_state.pop("add_road_select", None)
+    _set_road_flash(
+        "success",
+        f"Đã thêm {entry['road_name']} vào danh sách theo dõi. "
+        "Tuyến sẽ có dữ liệu trên dashboard sau lần cập nhật dữ liệu "
+        "tiếp theo.",
+    )
+    st.rerun()
+
+
+def _handle_remove_road(target):
+    """Xu ly xoa tuyen: chi goi road_manager (khong cascade delete).
+
+    Chi thay doi roads.csv; traffic/weather/processed giu nguyen.
+    Reset widget keys truoc rerun de selectbox khong giu option da xoa.
+    """
+    try:
+        road_manager.remove_road(target)
+    except road_manager.LastRoadError:
+        _set_road_flash(
+            "error",
+            "Không thể xóa tuyến cuối cùng. Hệ thống cần ít nhất một "
+            "tuyến được theo dõi.",
+        )
+        st.rerun()
+    except road_manager.RoadManagerError as exc:
+        _set_road_flash("error", f"Không xóa được tuyến: {exc}")
+        st.rerun()
+    for key in ("remove_road_select", "remove_road_confirm"):
+        st.session_state.pop(key, None)
+    _set_road_flash(
+        "success",
+        f"Đã xóa tuyến {target} khỏi danh sách theo dõi. "
+        "Dữ liệu lịch sử đã thu thập không bị xóa.",
+    )
+    st.rerun()
+
+
+def render_road_management_sidebar(analyzed_road_names):
+    """Section sidebar Quan ly tuyen duong (Phase 8.2).
+
+    - Danh sach doc TRUC TIEP tu data/roads.csv qua
+      road_manager.load_roads() (khong dung road_summary.csv).
+    - Add/Remove goi road_manager; khong goi collector/API/Spark;
+      khong sua processed data; khong doi KPI/map/charts.
+    - analyzed_road_names: set ten tuyen da co trong processed combined
+      (chi de hien coverage nhe, khong thay 6 KPI).
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.header("🛣️ Quản lý tuyến đường")
+
+    _show_road_flash()
+
+    try:
+        monitored = road_manager.load_roads()
+    except road_manager.RoadManagerError as exc:
+        st.sidebar.error(
+            "Không đọc được danh sách tuyến đang theo dõi "
+            f"(data/roads.csv): {exc}"
+        )
+        return
+
+    monitored_names = [r["road_name"] for r in monitored]
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🛣️</span>Đang theo dõi: {len(monitored_names)} tuyến</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if monitored_names:
+        st.sidebar.write(", ".join(monitored_names))
+    if analyzed_road_names is not None and monitored_names:
+        n_covered = len(set(monitored_names) & set(analyzed_road_names))
+        st.sidebar.caption(
+            f"{n_covered}/{len(monitored_names)} tuyến hiện có dữ liệu phân tích."
+        )
+    st.sidebar.caption(
+        "Danh sách theo dõi (roads.csv) có thể khác danh sách đã có dữ "
+        "liệu phân tích — đây là trạng thái hợp lệ."
+    )
+
+    with st.sidebar.expander("➕ Thêm tuyến"):
+        available = available_catalog_roads(HANOI_ROAD_CATALOG, monitored_names)
+        if not available:
+            st.info("Tất cả tuyến trong danh mục hiện đã được theo dõi.")
+        else:
+            st.caption("Tọa độ được hệ thống thiết lập tự động.")
+            with st.form("add_road_form", clear_on_submit=True):
+                selected = st.selectbox(
+                    "Chọn tuyến", options=available, key="add_road_select"
+                )
+                add_submitted = st.form_submit_button("Thêm tuyến")
+            if add_submitted:
+                _handle_add_road(selected)
+
+    with st.sidebar.expander("🗑️ Xóa tuyến"):
+        if not monitored_names:
+            st.info("Chưa có tuyến nào được theo dõi.")
+        else:
+            target = st.selectbox(
+                "Chọn tuyến cần xóa",
+                options=monitored_names,
+                key="remove_road_select",
+            )
+            confirm = st.checkbox(
+                "Tôi xác nhận muốn xóa tuyến này khỏi danh sách theo dõi.",
+                key="remove_road_confirm",
+            )
+            last_only = len(monitored_names) <= 1
+            if last_only:
+                st.info(
+                    "Chỉ còn 1 tuyến được theo dõi — không thể xóa tuyến "
+                    "cuối cùng."
+                )
+            if st.button(
+                "Xóa tuyến",
+                disabled=(not confirm or last_only),
+                key="remove_road_button",
+            ):
+                _handle_remove_road(target)
+
+
+UPDATE_FLASH_KEY = "update_flash"
+
+
+def _set_update_flash(kind, message):
+    """Luu update flash de hien sau rerun (tách biệt road_flash)."""
+    st.session_state[UPDATE_FLASH_KEY] = (kind, message)
+
+
+def _show_update_flash():
+    """Hien update flash trong sidebar 1 lan roi xoa (pure UI)."""
+    flash = st.session_state.pop(UPDATE_FLASH_KEY, None)
+    if flash is None:
+        return
+    kind, message = flash
+    if kind == "success":
+        st.sidebar.success(message)
+    else:
+        st.sidebar.warning(message)
+
+
+def _sanitize_update_error(message):
+    """Redact key=... khoi error text truoc khi hien thi (khong lo secret)."""
+    import re as _re
+
+    return _re.sub(r"(key=)[^&\s'\"]+", r"\1***", str(message or ""))
+
+
+def _format_update_summary(result):
+    """Chuoi summary ngan tu structured result (pure, so lieu that)."""
+    parts = [f"{result.get('roads_loaded', 0)} tuyến"]
+    parts.append(
+        f"Traffic: {result.get('traffic_collected', 0)} thành công, "
+        f"{result.get('traffic_failed', 0)} lỗi"
+    )
+    parts.append(
+        f"Weather: {result.get('weather_collected', 0)} thành công, "
+        f"{result.get('weather_failed', 0)} lỗi"
+    )
+    parts.append(
+        "Spark: hoàn thành" if result.get("spark_success") else "Spark: chưa hoàn tất"
+    )
+    try:
+        parts.append(f"Thời gian: {float(result.get('duration_seconds')):.1f}s")
+    except (TypeError, ValueError):
+        pass
+    return " • ".join(parts)
+
+
+def _handle_data_update():
+    """Chay pipeline DUNG 1 LAN khi user bam nut (khong auto-run/retry).
+
+    Gọi data_update.run_data_update() trong spinner; backend tu xu ly
+    lock/partial/failure. Success/partial -> flash + rerun de dashboard
+    doc snapshot moi; failure/already-running -> thong bao inline,
+    khong rerun.
+    """
+    with st.spinner("Đang thu thập dữ liệu và chạy Apache Spark..."):
+        result = data_update.run_data_update()
+    error = str(result.get("error") or "")
+    if not result.get("success", False) and "already running" in error.lower():
+        st.warning("Một lần cập nhật khác đang chạy. Vui lòng chờ hoàn tất.")
+        return
+    if result.get("success", False):
+        partial = (result.get("traffic_failed", 0) > 0) or (
+            result.get("weather_failed", 0) > 0
+        )
+        if partial:
+            _set_update_flash(
+                "warning",
+                "Cập nhật hoàn tất nhưng một số tuyến không thu thập được "
+                "dữ liệu. " + _format_update_summary(result),
+            )
+        else:
+            _set_update_flash(
+                "success",
+                "Đã cập nhật dữ liệu thành công. "
+                + _format_update_summary(result),
+            )
+        st.rerun()
+    st.error(
+        "Cập nhật dữ liệu thất bại: "
+        + (_sanitize_update_error(error) or "lỗi không xác định.")
+    )
+    st.caption(
+        f"Đã lưu: traffic {result.get('traffic_saved', 0)}, "
+        f"weather {result.get('weather_saved', 0)}. "
+        f"Spark: {'hoàn thành' if result.get('spark_success') else 'chưa hoàn tất'}. "
+        "Dữ liệu thô mới (nếu có) vẫn được giữ, không rollback."
+    )
+
+
+def render_data_update_sidebar():
+    """Section sidebar nut cap nhat du lieu (Phase 9.2).
+
+    Chi goi orchestrator public run_data_update(); khong goi truc tiep
+    TomTom/Open-Meteo/collector/Spark. Pipeline chi chay khi user bam nut.
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔄 Cập nhật dữ liệu")
+    _show_update_flash()
+    st.sidebar.caption(
+        "Thu thập dữ liệu giao thông và thời tiết mới cho các tuyến đang "
+        "theo dõi, sau đó chạy Apache Spark để cập nhật dashboard. "
+        "Cập nhật theo yêu cầu — quá trình có thể mất khoảng một phút."
+    )
+    if st.sidebar.button(
+        "🔄 Cập nhật dữ liệu",
+        key="update_data_button",
+        use_container_width=True,
+    ):
+        _handle_data_update()
+
+
 def main():
     st.set_page_config(
         page_title="Hanoi Traffic Analytics",
@@ -809,6 +1109,14 @@ def main():
         """,
         unsafe_allow_html=True,
     )
+
+    # ---- Sidebar: quan ly tuyen duong (roads.csv, khong cham processed) ----
+    render_road_management_sidebar(
+        set(combined_df["road_name"].dropna().astype(str).tolist())
+    )
+
+    # ---- Sidebar: one-click data update (orchestrator, rerun de refresh) ----
+    render_data_update_sidebar()
 
     # ---- Tong quan: 6 KPI tu snapshot (khong delta, khong live claim) ----
     st.markdown('<div class="section-header"><span class="section-icon">📈</span><h2>Tổng quan</h2></div>', unsafe_allow_html=True)

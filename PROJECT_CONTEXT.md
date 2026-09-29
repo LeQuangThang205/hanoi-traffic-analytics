@@ -302,7 +302,7 @@ Acceptance criteria:
 - [ ] Sidebar có checklist tuyến, nút thêm tuyến, nút cập nhật dữ liệu.
 - [ ] Chỉ dùng Pandas ở presentation layer nếu cần, Spark vẫn là engine xử lý.
 
-### Phase 8 — Road Management
+### Phase 8 — Road Management (HOÀN THÀNH)
 
 Nội dung:
 
@@ -310,12 +310,39 @@ Nội dung:
 
 Acceptance criteria:
 
-- [ ] Thêm tuyến mới bằng `(road_name, lat, lon)` hợp lệ; từ chối trùng tên/tọa độ sai.
-- [ ] Xóa tuyến khỏi `roads.csv` và dashboard cập nhật.
-- [ ] Tuyến mới xuất hiện trên map sau khi cập nhật dữ liệu.
-- [ ] Không phá dữ liệu lịch sử khi sửa `roads.csv`.
+- [x] Thêm tuyến mới bằng `(road_name, lat, lon)` hợp lệ; từ chối trùng tên/tọa độ sai.
+- [x] Xóa tuyến khỏi `roads.csv` và dashboard cập nhật.
+- [ ] Tuyến mới xuất hiện trên map sau khi cập nhật dữ liệu (cần chạy pipeline lần đầu ở Phase 9; Dai Co Viet đã được thêm vào `roads.csv` và dashboard hiển thị coverage 5/6).
+- [x] Không phá dữ liệu lịch sử khi sửa `roads.csv`.
 
-### Phase 9 — One-click Update
+Tiến độ:
+
+- [x] **Bước 8.1 — Safe Road Management Core: COMPLETE** (verification 91 checks PASS, 0 API, 0 Spark; `utils/road_manager.py` giữ nguyên, không sửa code).
+  - `roads.csv` vẫn là source of truth của MVP.
+  - Validation (tên/tọa độ/finite-number) PASS; duplicate protection (case-insensitive + trim) PASS.
+  - `add_road` / `remove_road` PASS (giữ thứ tự, header 1 lần, không tmp sót).
+  - Last-road protection (`LastRoadError`) PASS; malformed CSV fail rõ ràng, không rewrite.
+  - Atomic replacement (temp sibling + `os.replace` + cleanup) PASS.
+  - Test dùng CSV tạm (`tempfile`); production `roads.csv` byte-identical PRE==POST.
+- [x] **Bước 8.2 — Streamlit Road Management UI: COMPLETE** (AppTest headless PASS, smoke test 200, 0 API, 0 Spark; chỉ sửa `app.py`, `utils/road_manager.py` giữ nguyên).
+  - Sidebar đọc `roads.csv` trực tiếp qua `road_manager.load_roads()` (không dùng `road_summary.csv`).
+  - Add/Remove gọi `road_manager`; validation/error feedback (`ValidationError`/`DuplicateRoadError`/`LastRoadError`), không traceback.
+  - Last-road protection ở cả UI (disable) và core; historical data không cascade delete.
+  - Add/remove không tự gọi collector/Spark; tuyến mới chỉ có processed data sau lần cập nhật tiếp theo.
+  - Processed dashboard có thể tạm thời khác monitored roads (coverage `x/y` hiển thị nhẹ, 6 KPI không đổi).
+  - Automated tests chỉ dùng CSV tạm/AppTest read-only; production CSV byte-identical PRE==POST.
+- [x] **Bước 8.2 UX patch — Add Road dùng catalog dropdown: COMPLETE** (catalog 16 checks + AppTest PASS, smoke 200, 0 API, 0 Spark; sửa `config.py` + `app.py`, `utils/road_manager.py` giữ nguyên).
+  - `HANOI_ROAD_CATALOG` trong `config.py`: 13 entries (5 production giữ chính xác tọa độ `roads.csv` + 8 tuyến mới lấy điểm đại diện trên trục đường từ OpenStreetMap, làm tròn 4 decimals; Chua Boc/Nguyen Van Cu loại vì không xác minh được road point).
+  - Người dùng chỉ chọn tên tuyến; lat/lon tự lấy từ catalog; không nhập tay, không geocoding runtime/API.
+  - Dropdown Add chỉ hiện tuyến chưa theo dõi (trim + case-insensitive, tương thích road_manager); hết tuyến → thông báo thân thiện, không selectbox rỗng.
+  - Luồng: dropdown → catalog → `road_manager.add_road()` → `roads.csv` (schema không đổi); tuyến xóa có thể thêm lại sau refresh.
+  - Remove UI, 6 KPI, map, 5 charts, filters, historical no-cascade giữ nguyên.
+- [x] **Phase 8 closeout PASS** (0 API, 0 Spark; user e2e đã thêm Dai Co Viet qua dropdown → `roads.csv` 6 tuyến, coverage dashboard 5/6; automated tests chỉ dùng CSV tạm, production PRE==POST trong closeout).
+  - Phase 8.1 Safe Road Management Core PASS; Phase 8.2 Streamlit Road Management UI + catalog dropdown PASS.
+  - `roads.csv` vẫn là source of truth của MVP; Add/Remove không tự gọi API/Spark; historical data không cascade delete.
+  - Phase 9 sẽ triển khai one-click data update (lúc đó tuyến mới có processed data và marker trên map).
+
+### Phase 9 — One-click Update (HOÀN THÀNH)
 
 Nội dung:
 
@@ -323,10 +350,38 @@ Nội dung:
 
 Acceptance criteria:
 
-- [ ] Bấm `Cập nhật dữ liệu` / `Analyze Data` kích hoạt collector rồi Spark job.
-- [ ] Dashboard refresh hiển thị dữ liệu mới không cần restart thủ công.
-- [ ] Lỗi ở một bước được báo rõ, không treo UI.
-- [ ] Thời gian chạy chấp nhận được cho demo trên laptop.
+- [x] Bấm `Cập nhật dữ liệu` / `Analyze Data` kích hoạt collector rồi Spark job.
+- [x] Dashboard refresh hiển thị dữ liệu mới không cần restart thủ công.
+- [x] Lỗi ở một bước được báo rõ, không treo UI.
+- [x] Thời gian chạy chấp nhận được cho demo trên laptop.
+
+Tiến độ:
+
+- [x] **Bước 9.1 — Data Update Orchestrator: COMPLETE** (mock verification 18 checks PASS, 0 real API, 0 real Spark; NEW `data_update.py`, không sửa collector/Spark/app).
+  - `run_data_update()` tái sử dụng `collector.run_collection_cycle()` + `run_spark_etl()`/`run_road/hourly/weather_analytics()`; synchronous, không background job; app.py vẫn presentation-only.
+  - Result dict: success, started/finished UTC, duration, collection counters, spark_success/stages, processed_files, error.
+  - Collector best-effort được phản ánh trung thực; Spark gate: cần >= 1 saved observation mới, fatal collection → Spark 0 lần; Spark fail → raw giữ nguyên, không rollback.
+  - Concurrency guard: process-local non-blocking lock, call thứ hai bị từ chối ngay.
+  - Real first update (Dai Co Viet acceptance) CHƯA chạy; production CSV unchanged trong mock tests.
+  - Phase 9.2 sẽ nối Streamlit UI sau khi real pipeline được kiểm chứng.
+- [x] **Bước 9.1C — Weather schema constant shadowing fix: COMPLETE** (static + contract + mock regression PASS, 0 real API, 0 real Spark; chỉ sửa `spark_analysis.py`).
+  - First production collection succeeded 6/6 traffic + 6/6 weather; raw append retained (traffic 21 / weather 16 rows).
+  - Spark failed do duplicate `WEATHER_REQUIRED_COLUMNS` global (Phase 6.3 ghi đè raw contract Phase 5.3 tại runtime).
+  - Analytics constant renamed to `WEATHER_ANALYTICS_REQUIRED_COLUMNS` (1 def + 2 usages + docstring); raw contract + mọi logic/schema giữ nguyên.
+  - No API/Spark production rerun during fix verification; processed data still awaiting controlled Spark recovery/update.
+- [x] **Bước 9.1D — Controlled Spark Recovery: COMPLETE** (4 stages PASS 1 lần mỗi stage, 0 API; chỉ đọc raw hiện có, không sửa code).
+  - Reused 21 traffic + 16 weather raw rows; ETL PASS (matched 21/21, combined 21 rows/25 cols), road/hourly/weather analytics PASS.
+  - Dai Co Viet processed end-to-end: combined 1 row (22/29 km/h, congestion ~24.14 Đông, matched diff ~5.05 min), road_summary 6 tuyến.
+  - Reconciliation: combined 21 = road_sum 21 = hourly_sum 21 = weather_sum 21; raw CSV byte-identical PRE==POST.
+  - Dashboard data coverage = 6/6 (AppTest read-only PASS); deferred Phase 8 acceptance "newly added road becomes analyzable after next pipeline processing" = VERIFIED.
+- [x] **Bước 9.2 — Streamlit One-click Data Update: COMPLETE** (mocked AppTest 28 checks PASS, smoke 200, 0 real API, 0 real Spark; chỉ sửa `app.py`).
+  - Sidebar section "Cập nhật dữ liệu" sau Road Management; button gọi `data_update.run_data_update()` đúng 1 lần trong spinner, chỉ khi user bấm (render/filter/rerun không tự gọi).
+  - Structured result handling: full success (flash + rerun), partial (warning flash + rerun), failure (inline error + facts, không rerun/traceback), already-running (warning riêng).
+  - Flash/rerun pattern tách biệt road_flash; error sanitize `key=***`; production CSV byte-identical trong UI verification.
+- [x] **Phase 9 closeout PASS** (user browser E2E PASS; backend + UI đã verify, không chạy thêm production trong closeout).
+  - User bấm "Cập nhật dữ liệu" trên browser 2 lần thành công: traffic 21 → 33 (+12), weather 16 → 28 (+12), combined 21 → 33, road_summary 6 tuyến, hourly 2 → 3 rows; roads.csv giữ 6 tuyến.
+  - Full luồng Streamlit → orchestrator → Collector → TomTom/Open-Meteo → raw append → Spark ETL/join/analytics → processed → rerun refresh đã chứng minh end-to-end.
+  - Static 5 files PASS; AppTest sanity read-only PASS (Dai Co Viet, update button, 5 charts, 2 filters, 1 table, road mgmt).
 
 ### Phase 10 — Testing & Demo
 
@@ -387,15 +442,18 @@ Acceptance criteria:
 - Buoc 7.4 Plotly charts PASS: 5 charts (2 road hbar + 1 hourly line+markers + 2 weather bars) tieu thu truc tiep Spark summaries (khong re-aggregate combined, khong raw/Spark/API); ordering deterministic (road avg DESC+name, hour ASC, weather semantic); khong tao gio/condition thieu; km/h va % tren truc rieng; weather descriptive non-causal; helpers pure co validation + khong mutate source; dung width='stretch' (khong deprecated use_container_width); moi hash unchanged.
 - Buoc 7.5 detail table + filters PASS: 2 multiselect (tuyen alpha, trang thai semantic hien co) chi loc bang chi tiet (exact AND, copy, default all); KPI/map/charts giu snapshot day du (AppTest: loc Cau Giay -> 3 rows, KPI khong doi; empty -> thong bao than thien); bang 8 cot, event DESC + road ASC, gio Hanoi dd/mm/YYYY, weather unmatched hien "Khong co du lieu" (khong thanh 0/khong mua); st.dataframe read-only (khong editor/download); moi hash unchanged.
 - Buoc 7.6 final closeout PASS: Phase 7 acceptance passed; dashboard remains processed-snapshot presentation layer; 6 KPI + Folium map + 5 Plotly charts + isolated detail filters/table verified; Spark executions = 0; TomTom requests = 0; Open-Meteo requests = 0; source/processed artifacts remained byte-identical; temporary audit artifacts removed.
+- MySQL được chọn làm mục tiêu persistence cho phiên bản nâng cấp sau khi CSV MVP hoàn thành ổn định. Phase 8 hiện tại vẫn sử dụng `roads.csv`; chưa cài database, chưa tạo schema, chưa thêm connector.
+- Phase 8 closeout PASS: 8.1 core (91 checks) + 8.2 UI + catalog dropdown (13 entries) + remove regression + AppTest + smoke 200, TomTom = 0, Open-Meteo = 0, Spark = 0; user e2e thêm Dai Co Viet qua UI (roads.csv 5 → 6, dashboard coverage 5/6); production automated-test immutability giữ trong closeout; chuyển CURRENT_PHASE = 9.
+- Phase 9 closeout PASS: orchestrator + controlled collection/recovery + shadowing fix + one-click UI + user browser E2E (2 updates: traffic 21 → 33, weather 16 → 28, combined 33, hourly 3 rows; roads 6 giữ nguyên); chuyển CURRENT_PHASE = 10 (phase cuối, không có Phase 11).
 
 ---
 
 ## 8. Trạng thái hiện tại
 
 ```text
-CURRENT_PHASE = 8
-LAST_COMPLETED_PHASE = 7
-NEXT_PHASE = 9
+CURRENT_PHASE = 10
+LAST_COMPLETED_PHASE = 9
+NEXT_PHASE = —
 ```
 
 - Phase 0: HOÀN THÀNH.
@@ -406,7 +464,8 @@ NEXT_PHASE = 9
 - Phase 5 (Spark ETL): HOÀN THÀNH — final verification 5.8 PASS (22 checks, 0 Spark rerun, 0 API).
 - Phase 6 (Spark Analytics): HOÀN THÀNH — final verification 6.4 PASS (static + reconciliations, 0 Spark rerun, 0 API).
 - Phase 7 (Streamlit Dashboard): HOÀN THÀNH — final verification 7.6 PASS (audit + closeout).
-- Phase 8 (Road Management): CURRENT / IN PROGRESS.
-- Phase 9–10: CHƯA LÀM.
-- Không được triển khai Phase 9 trước khi Phase 8 được người dùng xác nhận hoàn thành.
+- Phase 8 (Road Management): HOÀN THÀNH — closeout PASS (8.1 core + 8.2 UI + catalog dropdown, user e2e add Dai Co Viet, 0 API, 0 Spark).
+- Phase 9 (One-click Update): HOÀN THÀNH — closeout PASS (backend + UI + user browser E2E 2 lần update thành công).
+- Phase 10 (Testing & Demo Preparation): CURRENT / IN PROGRESS.
+- Phase 10 là phase cuối cùng của roadmap (0 → 10); không có Phase 11.
 - Không tự chuyển `CURRENT_PHASE`; việc chuyển phase cần người dùng xác nhận.

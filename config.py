@@ -45,6 +45,47 @@ COLLECTION_WINDOWS = (
 TOMTOM_MONTHLY_BUDGET = 20_000
 TOMTOM_MONTHLY_SAFETY_LIMIT = 16_000
 
+# --- Hanoi road catalog (Phase 8.2, UX-only static data) ---
+# Danh muc tuyen Ha Noi co toa do dai dien de UI "Them tuyen" dung dropdown
+# thay vi nhap tay lat/lon. Moi entry chi co road_name/lat/lon (schema
+# roads.csv khong doi). Quy tac:
+# - 5 production roads GIU CHINH XAC toa do data/roads.csv hien tai.
+# - Tuyen moi: diem dai dien tren truc duong, tra cuu tu OpenStreetMap
+#   (Nominatim way lookup, lam tron 4 decimals nhu production precision).
+# - Chua Boc / Nguyen Van Cu KHONG dua vao vi khong lay duoc road point
+#   dang tin (accuracy > quantity).
+# - KHONG geocoding runtime, KHONG API call, KHONG database.
+HANOI_ROAD_CATALOG = (
+    {"road_name": "Nguyen Trai", "lat": 20.9983, "lon": 105.7929},
+    {"road_name": "Truong Chinh", "lat": 20.9975, "lon": 105.8348},
+    {"road_name": "Giai Phong", "lat": 20.9919, "lon": 105.8355},
+    {"road_name": "Cau Giay", "lat": 21.0285, "lon": 105.8003},
+    {"road_name": "Xuan Thuy", "lat": 21.0327, "lon": 105.7829},
+    {"road_name": "Dai Co Viet", "lat": 21.0082, "lon": 105.8469},
+    {"road_name": "Kim Ma", "lat": 21.0324, "lon": 105.8279},
+    {"road_name": "Lang Ha", "lat": 21.0156, "lon": 105.8144},
+    {"road_name": "Le Van Luong", "lat": 21.0092, "lon": 105.8099},
+    {"road_name": "Minh Khai", "lat": 21.0057, "lon": 105.8689},
+    {"road_name": "Nguyen Chi Thanh", "lat": 21.0246, "lon": 105.8112},
+    {"road_name": "Pham Van Dong", "lat": 21.0671, "lon": 105.7853},
+    {"road_name": "Tay Son", "lat": 21.0105, "lon": 105.8251},
+)
+
+
+def find_catalog_entry(road_name):
+    """Tim entry trong HANOI_ROAD_CATALOG theo ten (pure, khong IO).
+
+    So sanh trim + case-insensitive (tuong thich road_manager).
+    Tra ve dict entry COPY (chong mutate catalog) hoac None.
+    """
+    if not isinstance(road_name, str) or not road_name.strip():
+        return None
+    target = road_name.strip().lower()
+    for entry in HANOI_ROAD_CATALOG:
+        if entry["road_name"].strip().lower() == target:
+            return dict(entry)
+    return None
+
 
 def _window_minutes(start, end):
     """Do dai window (phut); start/end dang 'HH:MM'. Start phai < end.
