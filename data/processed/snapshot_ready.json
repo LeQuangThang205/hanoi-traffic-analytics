@@ -1,0 +1,14 @@
+{
+  "version": "2026-10-08T14:25:52.726815+00:00",
+  "published_at": "2026-10-08T14:25:52.726815+00:00",
+  "combined_rows": 1358,
+  "road_summary_rows": 7,
+  "road_observation_sum": 1358,
+  "hourly_summary_rows": 14,
+  "hourly_observation_sum": 1358,
+  "weather_summary_rows": 2,
+  "weather_observation_sum": 1358,
+  "parquet_rows": 1358,
+  "traffic_input_rows": 1358,
+  "weather_input_rows": 530
+}

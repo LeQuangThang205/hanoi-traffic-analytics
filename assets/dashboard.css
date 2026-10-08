@@ -1,0 +1,300 @@
+/* Production monitoring theme (dark).
+   Native Streamlit layout + controlled CSS only. No frameworks, no CDN. */
+
+html {
+    scroll-behavior: smooth;
+}
+
+/* Slim dark scrollbar (never hidden). */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #2b3a55;
+    border-radius: 8px;
+    border: 2px solid #0b1220;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #3b507a;
+}
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #2b3a55 transparent;
+}
+
+/* Surface level 0 — page background. */
+.stApp {
+    background-color: #0b1220;
+    color: #e6ebf2;
+}
+.block-container {
+    /* Top padding must clear the fixed Streamlit header/toolbar.
+       1.2rem (~19px) < header height -> hero slid underneath it and the
+       title top was clipped. 4rem (~64px) = header + ~20px breathing,
+       dense but fully below the toolbar. No negative margins. */
+    padding-top: 4rem !important;
+    padding-bottom: 3rem !important;
+    max-width: 1400px;
+}
+
+/* Surface level 1 — sidebar control panel. */
+[data-testid="stSidebar"] {
+    background-color: #0e1628;
+}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] .stMarkdown {
+    color: #c9d4e6;
+}
+
+h1, h2, h3 {
+    color: #f2f5fa !important;
+}
+.stCaption {
+    color: #93a1b8 !important;
+}
+
+/* Hero header. Natural content flow (no fixed height) so text can never
+   be cut by the container. line-height 1.25 keeps descenders clear. */
+.dash-title {
+    font-size: 1.9rem;
+    font-weight: 700;
+    color: #f2f5fa;
+    line-height: 1.25;
+    overflow: visible;
+}
+.dash-subtitle {
+    color: #93a1b8;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    margin-top: 0.15rem;
+    /* Hero -> KPI breathing (~16px here + Streamlit block gap ~= 20-28px
+       total). Margin, not fixed height, so nothing can clip. */
+    margin-bottom: 1rem;
+}
+.header-meta {
+    text-align: right;
+    color: #93a1b8;
+    font-size: 0.82rem;
+}
+.header-meta b {
+    color: #e6ebf2;
+    font-size: 1.0rem;
+}
+.status-line {
+    text-align: right;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.15rem;
+}
+.status-dot {
+    color: #34d399;
+}
+
+/* Surface level 2 — KPI cards. */
+.kpi-card {
+    background: #141d31;
+    border: 1px solid #22304a;
+    border-radius: 16px;
+    padding: 0.9rem 1.1rem;
+    margin-bottom: 0.5rem;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    transition: transform 0.2s ease, border-color 0.2s ease,
+        box-shadow 0.2s ease, background-color 0.2s ease;
+}
+.kpi-card:hover {
+    transform: translateY(-2px);
+    border-color: #33507e;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.kpi-label {
+    font-size: 0.72rem;
+    color: #93a1b8;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+}
+.kpi-value {
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.25;
+}
+.kpi-icon {
+    font-size: 1.1rem;
+    margin-right: 0.4rem;
+}
+
+/* Section headings. */
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    margin-bottom: 0.6rem;
+}
+.section-header h2 {
+    margin: 0;
+    font-size: 1.22rem;
+    font-weight: 650;
+    color: #f2f5fa;
+}
+.section-icon {
+    font-size: 1.2rem;
+}
+.section-caption {
+    color: #93a1b8;
+    font-size: 0.88rem;
+    margin-top: -0.25rem;
+    margin-bottom: 0.8rem;
+}
+
+/* Generic dark card (weather, insights). */
+.card {
+    background: #111a2c;
+    border: 1px solid #22304a;
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    transition: transform 0.2s ease, border-color 0.2s ease,
+        box-shadow 0.2s ease;
+}
+.card:hover {
+    transform: translateY(-2px);
+    border-color: #33507e;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* Insight callout cards. */
+.insight-card {
+    background: #111a2c;
+    border: 1px solid #22304a;
+    border-left: 4px solid #38bdf8;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.6rem;
+}
+.insight-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #38bdf8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.3rem;
+}
+.insight-content {
+    font-size: 0.92rem;
+    color: #dbe4f0;
+    line-height: 1.5;
+}
+
+/* Sidebar compact. */
+.sidebar-metric {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    font-size: 0.88rem;
+    color: #c9d4e6;
+}
+.sidebar-metric-icon {
+    font-size: 1.05rem;
+}
+.sidebar-divider {
+    border-top: 1px solid #22304a;
+    margin: 0.7rem 0;
+}
+.sidebar-section {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #93a1b8;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0.9rem 0 0.4rem 0;
+}
+.sidebar-status {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #dbe4f0;
+    margin: 0.2rem 0 0.4rem 0;
+}
+
+/* Detail table spacing. */
+.detail-count {
+    font-size: 0.85rem;
+    color: #93a1b8;
+    margin-bottom: 0.5rem;
+}
+
+/* Chart containers. */
+.chart-container {
+    background: transparent;
+}
+
+/* Divider. */
+.hr-subtle {
+    border: none;
+    border-top: 1px solid #22304a;
+    margin: 1.2rem 0;
+}
+
+/* Map + legend. */
+.map-container {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #22304a;
+}
+.legend-row {
+    color: #c9d4e6;
+    font-size: 0.88rem;
+}
+
+/* Weather values. */
+.wx-value {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+.wx-label {
+    font-size: 0.72rem;
+    color: #93a1b8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* Widgets readability on dark. */
+[data-testid="stDataFrame"] {
+    border: 1px solid #22304a;
+    border-radius: 10px;
+}
+.stSelectbox label, .stMultiSelect label {
+    color: #c9d4e6 !important;
+}
+
+/* Secondary action button (manual update — not the primary path). */
+div[data-testid="stButton"] button[kind="secondary"] {
+    transition: transform 0.2s ease, border-color 0.2s ease,
+        box-shadow 0.2s ease, background-color 0.2s ease;
+}
+div[data-testid="stButton"] button[kind="secondary"]:hover {
+    transform: translateY(-2px);
+    border-color: #33507e;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* Expanders blend into the dark surface. */
+div[data-testid="stExpander"] {
+    border: 1px solid #22304a;
+    border-radius: 12px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+div[data-testid="stExpander"]:hover {
+    border-color: #33507e;
+}

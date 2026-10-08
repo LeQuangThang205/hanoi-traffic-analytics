@@ -732,14 +732,231 @@ def export_processed_data(df, output_path=None):
             "export_strategy": "driver_csv_mvp"}
 
 
-def run_spark_etl(output_path=None):
+# ============================================================
+# Phase 10.2B — Windows-safe Parquet storage fallback (PyArrow).
+#
+# - Apache Spark VAN la ETL engine duy nhat: moi validation, transform,
+#   join, orderBy thuc hien bang Spark truoc khi goi helper nay.
+# - PyArrow CHI la driver-side serializer cho MVP nho (33 rows scale):
+#   nhan Spark-produced rows (da order) -> typed Arrow table -> Parquet.
+#   KHONG doc raw CSV bang Pandas, KHONG ETL lai, KHONG thay Spark.
+# - Ly do fallback: native df.write.parquet() FAIL tren Windows do thieu
+#   HADOOP_HOME/winutils (da verify Phase 10.2, khong cai winutils).
+# - Limitation: driver-side collect/write KHONG scalable nhu distributed
+#   Spark writer; dataset lon/cluster nen dung native Parquet writer.
+# ============================================================
+
+COMBINED_PARQUET_FILENAME = "combined_data.parquet"
+
+# Typed Arrow schema cho 25-col combined contract (ten/order = CSV).
+# Timestamp co tz UTC; numeric double; local_hour/weather_code int32;
+# weather_matched bool; cac cot weather nullable (unmatched -> NULL).
+def _combined_parquet_schema():
+    import pyarrow as pa
+
+    return pa.schema([
+        pa.field("timestamp", pa.string(), nullable=False),
+        pa.field("road_name", pa.string(), nullable=False),
+        pa.field("lat", pa.float64(), nullable=False),
+        pa.field("lon", pa.float64(), nullable=False),
+        pa.field("current_speed", pa.float64(), nullable=False),
+        pa.field("free_flow_speed", pa.float64(), nullable=False),
+        pa.field("current_travel_time", pa.float64(), nullable=False),
+        pa.field("free_flow_travel_time", pa.float64(), nullable=False),
+        pa.field("confidence", pa.float64(), nullable=False),
+        pa.field("event_timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("congestion_percent", pa.float64(), nullable=False),
+        pa.field("congestion_level", pa.string(), nullable=False),
+        pa.field("local_hour", pa.int32(), nullable=False),
+        pa.field("weather_timestamp", pa.string(), nullable=True),
+        pa.field("weather_event_timestamp", pa.timestamp("us", tz="UTC"), nullable=True),
+        pa.field("weather_lat", pa.float64(), nullable=True),
+        pa.field("weather_lon", pa.float64(), nullable=True),
+        pa.field("temperature", pa.float64(), nullable=True),
+        pa.field("humidity", pa.float64(), nullable=True),
+        pa.field("precipitation", pa.float64(), nullable=True),
+        pa.field("rain", pa.float64(), nullable=True),
+        pa.field("wind_speed", pa.float64(), nullable=True),
+        pa.field("weather_code", pa.int32(), nullable=True),
+        pa.field("weather_matched", pa.bool_(), nullable=False),
+        pa.field("weather_time_diff_minutes", pa.float64(), nullable=True),
+    ])
+
+
+def default_combined_parquet_path():
+    """Default output data/lake/curated/combined/combined_data.parquet."""
+    from pathlib import Path
+
+    try:
+        from config import COMBINED_PARQUET_PATH as _P
+        return Path(_P)
+    except ImportError:
+        return (
+            Path(__file__).resolve().parent / "data" / "lake"
+            / "curated" / "combined" / COMBINED_PARQUET_FILENAME
+        )
+
+
+def _parquet_float(value):
+    """Float hoac None (giữ NULL, khong fill 0)."""
+    if value is None:
+        return None
+    return float(value)
+
+
+def _parquet_int(value):
+    """Int hoac None (giữ NULL)."""
+    if value is None:
+        return None
+    return int(value)
+
+
+def _parquet_str(value):
+    """String hoac None (giữ NULL)."""
+    if value is None:
+        return None
+    return str(value)
+
+
+def _parquet_ts(value):
+    """Datetime ve UTC tz-aware hoac None.
+
+    Spark TimestampType collect ve Python datetime (naive = UTC instant
+    vi session tz UTC); naive -> gan UTC, aware -> convert UTC.
+    String ISO (phong thu) -> parse, naive coi la UTC.
+    """
+    if value is None:
+        return None
+    from datetime import datetime, timezone
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def export_combined_parquet(df, output_path=None):
+    """Export Spark combined DataFrame ra single-file Parquet (PyArrow).
+
+    - Input phai co exact 25 cot theo EXPORT_REQUIRED_COLUMNS (sai ->
+      ValueError truoc moi materialization; khong bao gio ghi malformed).
+    - ORDERING DO SPARK: orderBy deterministic theo EXPORT_ORDER_COLUMNS
+      (giong CSV export) truoc collect; PyArrow chi serialize snapshot nho.
+    - Typed schema theo _combined_parquet_schema() (khong ep all-string).
+    - Atomic single-file replace: ghi temp sibling, read-back validate
+      (row count + column names), chi os.replace sang final khi PASS;
+      loi -> file cu giu nguyen, temp duoc don.
+    - Tra ve metadata (output_path, output_rows, header, export_strategy).
+      Khong session/API. Caller quan ly SparkSession.
+    """
+    import os
+    import uuid
+    from pathlib import Path
+
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "Can pyarrow de ghi Parquet fallback (pip install -r requirements.txt)."
+        ) from exc
+
+    from pyspark.sql import functions as F
+
+    if list(df.columns) != EXPORT_REQUIRED_COLUMNS:
+        raise ValueError(
+            "export_combined_parquet requires exact 25-column 5.6 output; got "
+            f"{list(df.columns)!r}, expected {EXPORT_REQUIRED_COLUMNS!r}."
+        )
+
+    final = Path(output_path) if output_path is not None else default_combined_parquet_path()
+    # Timestamp lay tu Spark date_format UTC (cung format voi CSV export)
+    # thay vi Python naive collect (JVM local tz co the lech, vd +7h):
+    # string co offset -> parse unambiguous ve UTC instant.
+    ordered = (
+        df.orderBy(*[F.col(c).asc() for c in EXPORT_ORDER_COLUMNS])
+        .withColumn("__ets_str", F.date_format("event_timestamp", EXPORT_TS_FORMAT))
+        .withColumn("__wets_str", F.date_format("weather_event_timestamp", EXPORT_TS_FORMAT))
+    )
+    rows = ordered.collect()
+
+    schema = _combined_parquet_schema()
+    cols = {c: [] for c in EXPORT_REQUIRED_COLUMNS}
+    for row in rows:
+        d = row.asDict()
+        cols["timestamp"].append(_parquet_str(d["timestamp"]))
+        cols["road_name"].append(_parquet_str(d["road_name"]))
+        for c in ("lat", "lon", "current_speed", "free_flow_speed",
+                  "current_travel_time", "free_flow_travel_time",
+                  "confidence", "congestion_percent"):
+            cols[c].append(_parquet_float(d[c]))
+        cols["event_timestamp"].append(_parquet_ts(d["__ets_str"]))
+        cols["congestion_level"].append(_parquet_str(d["congestion_level"]))
+        cols["local_hour"].append(_parquet_int(d["local_hour"]))
+        cols["weather_timestamp"].append(_parquet_str(d["weather_timestamp"]))
+        cols["weather_event_timestamp"].append(_parquet_ts(d["__wets_str"]))
+        for c in ("weather_lat", "weather_lon", "temperature", "humidity",
+                  "precipitation", "rain", "wind_speed",
+                  "weather_time_diff_minutes"):
+            cols[c].append(_parquet_float(d[c]))
+        cols["weather_code"].append(_parquet_int(d["weather_code"]))
+        matched = d["weather_matched"]
+        cols["weather_matched"].append(None if matched is None else bool(matched))
+
+    table = pa.table(
+        {c: pa.array(cols[c], type=schema.field(c).type)
+         for c in EXPORT_REQUIRED_COLUMNS},
+        schema=schema,
+    )
+
+    final.parent.mkdir(parents=True, exist_ok=True)
+    tmp = final.parent / f"{final.name}.tmp-{uuid.uuid4().hex[:8]}"
+    try:
+        pq.write_table(table, tmp)
+        back = pq.read_table(tmp)
+        if back.num_rows != len(rows):
+            raise ValueError(
+                f"Parquet read-back row mismatch: wrote {len(rows)}, "
+                f"read {back.num_rows}."
+            )
+        if list(back.schema.names) != EXPORT_REQUIRED_COLUMNS:
+            raise ValueError(
+                f"Parquet read-back column mismatch: {list(back.schema.names)!r}."
+            )
+        os.replace(tmp, final)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+    return {"output_path": str(final), "output_rows": len(rows),
+            "header": list(EXPORT_REQUIRED_COLUMNS),
+            "export_strategy": "pyarrow_driver_fallback"}
+
+
+def run_spark_etl(output_path=None, parquet_path=None):
     """Orchestrate full Phase 5 pipeline roi export (don gian, fail-fast).
 
     traffic: load -> validate -> derive; weather: load -> validate -> dedup;
-    joined = temporal_join_traffic_weather(); export combined_data.csv.
-    Bat loi o bat ky stage nao -> raise (khong tao CSV gia), temp duoc don,
-    file final cu duoc giu neu replacement chua xong. Luon stop session.
-    Tra ve metadata (traffic/weather/output/matched/unmatched rows + path).
+    joined = temporal_join_traffic_weather(); export combined_data.csv +
+    combined_data.parquet (PyArrow Windows-safe fallback, Spark van la ETL
+    engine duy nhat).
+    Thu tu export: CSV compatibility truoc (atomic replace), Parquet sau
+    (atomic replace + read-back validate). Parquet fail -> raise (CSV moi
+    van giu hop le, Parquet cu giu nguyen nho temp+replace).
+    Bat loi o bat ky stage nao -> raise (khong tao file gia), temp duoc don.
+    Luon stop session.
+    Tra ve metadata (traffic/weather/output/matched/unmatched rows + path
+    + parquet_path/parquet_rows).
     """
     from pyspark.sql import functions as F
 
@@ -760,6 +977,7 @@ def run_spark_etl(output_path=None):
         n_out = joined.count()
         n_matched = joined.filter(F.col("weather_matched") == True).count()
         meta = export_processed_data(joined, output_path=output_path)
+        parquet_meta = export_combined_parquet(joined, output_path=parquet_path)
         try:
             traffic.unpersist()
             weather.unpersist()
@@ -772,6 +990,8 @@ def run_spark_etl(output_path=None):
                 "weather_rows": n_weather,
                 "matched_rows": n_matched,
                 "unmatched_rows": n_out - n_matched,
+                "parquet_path": parquet_meta["output_path"],
+                "parquet_rows": parquet_meta["output_rows"],
             }
         )
         return meta
@@ -1008,7 +1228,7 @@ def export_road_summary(df, output_path=None):
             "export_strategy": "driver_csv_mvp"}
 
 
-def run_road_analytics(output_path=None):
+def run_road_analytics(output_path=None, combined_path=None):
     """Orchestrate Phase 6.1: load processed -> analyze -> export (fail-fast).
 
     Doc Phase 5 boundary artifact (KHONG raw, KHONG re-validation/join),
@@ -1016,12 +1236,15 @@ def run_road_analytics(output_path=None):
     stage nao -> raise (khong tao CSV gia). Luon stop session.
     Tra ve metadata (input_rows/roads/output/sum/top road + avg).
     Ket qua la descriptive cua collected observations, khong claim causality.
+
+    combined_path: optional input combined_data.csv (versioned staging).
+    None -> default legacy data/processed/combined_data.csv (backward compat).
     """
     import csv as _csv
 
     spark = create_spark_session()
     try:
-        df = load_processed_data(spark)
+        df = load_processed_data(spark, path=combined_path)
         summary = analyze_roads(df)
         n_in = df.count()
         meta = export_road_summary(summary, output_path=output_path)
@@ -1218,7 +1441,7 @@ def export_hourly_summary(df, output_path=None):
             "export_strategy": "driver_csv_mvp"}
 
 
-def run_hourly_analytics(output_path=None):
+def run_hourly_analytics(output_path=None, combined_path=None):
     """Orchestrate Phase 6.2: load processed -> analyze -> export (fail-fast).
 
     Doc Phase 5 boundary artifact (KHONG raw, KHONG road_summary lam input),
@@ -1227,12 +1450,15 @@ def run_hourly_analytics(output_path=None):
     Tra ve metadata (input_rows/distinct_hours/output/sum/top hours + avg).
     Ket qua la descriptive cua collected observations ("trong du lieu da
     thu thap"), khong claim causality hay Hanoi-wide.
+
+    combined_path: optional input combined_data.csv (versioned staging).
+    None -> default legacy data/processed/combined_data.csv (backward compat).
     """
     import csv as _csv
 
     spark = create_spark_session()
     try:
-        df = load_processed_data(spark)
+        df = load_processed_data(spark, path=combined_path)
         summary = analyze_hourly(df)
         n_in = df.count()
         meta = export_hourly_summary(summary, output_path=output_path)
@@ -1448,7 +1674,7 @@ def export_weather_summary(df, output_path=None):
             "export_strategy": "driver_csv_mvp"}
 
 
-def run_weather_analytics(output_path=None):
+def run_weather_analytics(output_path=None, combined_path=None):
     """Orchestrate Phase 6.3: load processed -> analyze -> export (fail-fast).
 
     Doc Phase 5 boundary artifact (KHONG raw, KHONG summary khac lam input),
@@ -1456,6 +1682,9 @@ def run_weather_analytics(output_path=None):
     weather_summary.csv. Loi o bat ky stage nao -> raise (khong tao CSV gia).
     Luon stop session. Tra ve metadata (input/matched/unmatched/analyzed/
     output rows + path). Ket qua la descriptive association, khong causality.
+
+    combined_path: optional input combined_data.csv (versioned staging).
+    None -> default legacy data/processed/combined_data.csv (backward compat).
     """
     import csv as _csv
 
@@ -1463,7 +1692,7 @@ def run_weather_analytics(output_path=None):
 
     spark = create_spark_session()
     try:
-        df = load_processed_data(spark)
+        df = load_processed_data(spark, path=combined_path)
         summary = analyze_weather_conditions(df)
         n_in = df.count()
         n_matched = df.filter(F.col("weather_matched") == True).count()

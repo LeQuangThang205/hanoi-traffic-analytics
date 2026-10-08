@@ -26,24 +26,62 @@ ROAD_SUMMARY_CSV = PROCESSED_DIR / "road_summary.csv"
 HOURLY_SUMMARY_CSV = PROCESSED_DIR / "hourly_summary.csv"
 WEATHER_SUMMARY_CSV = PROCESSED_DIR / "weather_summary.csv"
 
+# --- Local Data Lake (Phase 10.2B, Windows-safe PyArrow fallback) ---
+# Raw zone: ROADS_CSV / TRAFFIC_DATA_CSV / WEATHER_DATA_CSV (CSV, giu nguyen).
+# Curated zone: data/processed/*.csv (dashboard compat) + Parquet analytical
+# storage duoi day (Spark ETL + PyArrow driver-side serializer).
+# ML zone: reserved cho phase sau (chua tao).
+DATA_LAKE_DIR = DATA_DIR / "lake"
+CURATED_DIR = DATA_LAKE_DIR / "curated"
+COMBINED_PARQUET_PATH = CURATED_DIR / "combined" / "combined_data.parquet"
+
 # --- Spark (Local Mode, Phase 0 da verify) ---
 SPARK_APP_NAME = "HanoiTrafficAnalytics"
 SPARK_MASTER = "local[*]"
 
-# --- Historical collection cadence + quota policy (Phase 4.3, design contract) ---
-# Chay thu cong theo khung gio Ha Noi; start inclusive, end exclusive
-# (vd 06:00–10:00 cho cac cycle 06:00, 06:15, ..., 09:45; khong chay 10:00).
-COLLECTION_INTERVAL_MINUTES = 15
+# --- Historical collection cadence + quota policy (Phase 4.3, Phase 10.4 campaign) ---
+# Campaign 10.4: 06:00-22:00 lien tuc moi 5 phut (Asia/Ho_Chi_Minh).
+# Start inclusive, end exclusive (cycles 06:00, 06:05, ..., 21:55; khong chay 22:00).
+# Ly do chon (thay vi multi-window 10.3 cu 06-10 + 16-20): single window don gian
+# nhat (1 tuple), tu dong phu trua + toi, khong gap logic, de giai thich.
+# 6 roads -> 192 cycles/ngay -> ~1,152 combined observations/ngay (100% success).
+# Internal API demand (KHONG ket luan quota/budget vi chua verify quota chinh
+# thuc hien tai): TomTom ~1,152 + Open-Meteo ~1,152 = ~2,304 requests/ngay;
+# TomTom ~34,560/30 ngay. Laptop runtime ~16h/ngay nhung co the stop/restart
+# bat ky luc nao; missed slots bi skip, khong backfill.
+COLLECTION_INTERVAL_MINUTES = 5
 COLLECTION_TIMEZONE = "Asia/Ho_Chi_Minh"
 COLLECTION_WINDOWS = (
-    ("06:00", "10:00"),
-    ("16:00", "20:00"),
+    ("06:00", "22:00"),
 )
+
+# --- Real data collection campaign targets (Phase 10.4, planning constants) ---
+# Practical target cho student ML prototype (khong phai universal ML minimum).
+# Uu tien diversity (nhieu ngay, weekday+weekend, sang/trua/chieu/toi,
+# mua/khong mua, nhieu congestion levels) hon raw row count.
+# Processing: per-cycle (moi collection cycle -> 1 Spark process-only ngay
+# sau khi raw persistence hoan tat; near-realtime batch 5 phut, KHONG streaming).
+CAMPAIGN_TARGET_MIN_OBS = 3_000
+CAMPAIGN_TARGET_MAX_OBS = 5_000
+CAMPAIGN_PROCESSING_CADENCE = "per-cycle"
 
 # Project-configured budget (khong phai dynamic provider discovery).
 # Safety limit = 80% budget; reserve cho manual tests/demo/dev.
 TOMTOM_MONTHLY_BUDGET = 20_000
 TOMTOM_MONTHLY_SAFETY_LIMIT = 16_000
+
+# --- Auto-process during collection campaign (near-realtime, per-cycle) ---
+# Campaign thu API moi 5 phut VA Spark process ngay sau moi collection cycle:
+# sau moi AUTO_PROCESS_EVERY_CYCLES cycle attempts da hoan tat, campaign tu
+# chay data_update.run_process_only() mot lan (tuan tu, khong song song).
+# Voi AUTO_PROCESS_EVERY_CYCLES = 1: moi cycle trong valid window deu
+# collection -> raw persistence hoan tat -> Spark ETL + analytics ->
+# processed snapshot moi (near-realtime batch 5 phut, KHONG streaming).
+# Chi 1 Spark job tai 1 thoi diem; khong multiprocessing/queue/backfill.
+# So 1 chi dinh nghia 1 lan o day, KHONG hard-code rai rac trong scheduler.
+# Tat bang CLI --no-auto-process.
+AUTO_PROCESS_ENABLED = True
+AUTO_PROCESS_EVERY_CYCLES = 1
 
 # --- Hanoi road catalog (Phase 8.2, UX-only static data) ---
 # Danh muc tuyen Ha Noi co toa do dai dien de UI "Them tuyen" dung dropdown

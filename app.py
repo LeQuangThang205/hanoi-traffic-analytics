@@ -1,9 +1,21 @@
 """Phase 7.1-7.6 — Streamlit Dashboard (presentation layer only).
 
-Doc 4 processed snapshots cua Phase 5/6 va hien thi thong tin co ban + KPI
-tong quan. KHONG Spark/pyspark, KHONG rerun ETL/analytics, KHONG
-TomTom/Open-Meteo, KHONG ghi/sua bat ky CSV nao (read-only). Pandas chi dung
-o presentation layer cho du lieu nho (KPI don gian, khong thay Spark).
+Doc versioned processed snapshot qua current_snapshot.json
+(snapshots/<version>/) va hien thi thong tin co ban + KPI tong quan.
+KHONG Spark/pyspark, KHONG rerun ETL/analytics, KHONG TomTom/Open-Meteo,
+KHONG ghi/sua bat ky CSV nao (read-only). Pandas chi dung o presentation
+layer cho du lieu nho (KPI don gian, khong thay Spark).
+
+Near-realtime: fragment `_auto_refresh_tick()` tu chay moi 30s (native
+st.fragment run_every); khi snapshot key doi thi full app rerun de doc du
+lieu moi. Versioned publishing: pipeline build snapshot moi trong
+snapshots/<version>/ rieng; dashboard chi doc snapshot ma
+current_snapshot.json dang tro toi (pointer atomic A->B sau FULL process +
+validate). Khong bao gio doc mixed-version (combined B + summary A).
+Bootstrap khi chua co pointer: dung legacy coherent snapshot neu validate
+duoc. Auto-refresh CHI doc + render, TUYET DOI KHONG goi collector/API/Spark
+(pipeline chi chay tu historical_collector --continuous hoac nut manual khi
+user click).
 """
 
 from pathlib import Path
@@ -58,6 +70,12 @@ REQUIRED_COLUMNS = {
 
 HANOI_TZ = "Asia/Ho_Chi_Minh"
 
+# Near-realtime dashboard auto-refresh (native Streamlit, read-only).
+# Fragment nho `_auto_refresh_tick()` tu chay moi 30s; neu file signature
+# cua processed snapshot doi (Spark vua replace) thi kich hoat 1 full app
+# rerun de doc snapshot moi. Refresh KHONG goi API/Spark/collector.
+AUTO_REFRESH_SECONDS = 30
+
 # Marker color theo Phase 5 congestion_level (source of truth, khong suy
 # tu congestion_percent lam tron, khong random).
 CONGESTION_COLORS = {
@@ -65,6 +83,14 @@ CONGESTION_COLORS = {
     "Đông": "orange",
     "Ùn tắc": "red",
     "Ùn tắc nghiêm trọng": "darkred",
+}
+
+# Emoji cho legend ban do (presentation only; thu tu lay tu data/CONGESTION_COLORS).
+STATUS_EMOJI = {
+    "Thông thoáng": "🟢",
+    "Đông": "🟡",
+    "Ùn tắc": "🟠",
+    "Ùn tắc nghiêm trọng": "🔴",
 }
 
 KPI_ICONS = {
@@ -76,139 +102,17 @@ KPI_ICONS = {
     "latest_hanoi": "🕐",
 }
 
-# ---- CSS cho visual polish (scoped, minimal) ----
-DASHBOARD_CSS = """
-<style>
-/* Reduce top padding */
-.block-container {
-    padding-top: 1.5rem !important;
-}
+# ---- Dashboard theme: assets/dashboard.css (khong framework/CDN) ----
+# CSS nam rieng de app.py khoi phinh to; inject_css doc file + wrap <style>.
+DASHBOARD_CSS_PATH = BASE_DIR / "assets" / "dashboard.css"
 
-/* KPI card styling */
-.kpi-card {
-    background: #fafafa;
-    border: 1px solid #e8e8e8;
-    border-radius: 10px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 0.5rem;
-    transition: box-shadow 0.2s ease;
-}
-.kpi-card:hover {
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-}
-.kpi-label {
-    font-size: 0.8rem;
-    color: #666;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    margin-bottom: 0.25rem;
-}
-.kpi-value {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: #1a1a1a;
-    line-height: 1.3;
-}
-.kpi-icon {
-    font-size: 1.2rem;
-    margin-right: 0.5rem;
-}
 
-/* Section heading */
-.section-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 2rem;
-    margin-bottom: 0.75rem;
-}
-.section-header h2 {
-    margin: 0;
-    font-size: 1.4rem;
-    font-weight: 600;
-    color: #1a1a1a;
-}
-.section-icon {
-    font-size: 1.3rem;
-}
-.section-caption {
-    color: #666;
-    font-size: 0.9rem;
-    margin-top: -0.25rem;
-    margin-bottom: 1rem;
-}
-
-/* Insight callout cards */
-.insight-card {
-    background: #f8f9fa;
-    border: 1px solid #e8e8e8;
-    border-left: 4px solid #3b82f6;
-    border-radius: 8px;
-    padding: 0.85rem 1rem;
-    margin-bottom: 0.75rem;
-}
-.insight-title {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #3b82f6;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-bottom: 0.35rem;
-}
-.insight-content {
-    font-size: 0.95rem;
-    color: #333;
-    line-height: 1.5;
-}
-
-/* Sidebar compact */
-.sidebar-metric {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0;
-    font-size: 0.9rem;
-}
-.sidebar-metric-icon {
-    font-size: 1.1rem;
-}
-.sidebar-divider {
-    border-top: 1px solid #e8e8e8;
-    margin: 0.75rem 0;
-}
-
-/* Detail table spacing */
-.detail-count {
-    font-size: 0.85rem;
-    color: #666;
-    margin-bottom: 0.5rem;
-}
-
-/* Chart containers */
-.chart-container {
-    background: transparent;
-}
-
-/* Divider */
-.hr-subtle {
-    border: none;
-    border-top: 1px solid #e8e8e8;
-    margin: 1.5rem 0;
-}
-
-/* Map container */
-.map-container {
-    border-radius: 8px;
-    overflow: hidden;
-    border: 1px solid #e8e8e8;
-}
-</style>
-"""
-
-def inject_css():
-    """Inject scoped dashboard CSS."""
-    st.markdown(DASHBOARD_CSS, unsafe_allow_html=True)
+def inject_css(css_path=None):
+    """Inject dashboard CSS tu assets/dashboard.css (scoped, dark theme)."""
+    target = Path(css_path) if css_path is not None else DASHBOARD_CSS_PATH
+    with open(target, "r", encoding="utf-8") as fh:
+        css = fh.read()
+    st.markdown(f"<style>\n{css}\n</style>", unsafe_allow_html=True)
 
 
 def find_missing_files(paths=None):
@@ -375,15 +279,284 @@ def calculate_overview_metrics(combined_df, road_df, hourly_df, weather_df, even
     }
 
 
+def snapshot_signature(combined=None, road=None, hourly=None, weather=None):
+    """File version key cho 4 processed snapshots (pure, read-only).
+
+    Tra ve tuple (path, mtime_ns, size) cho moi file; file thieu -> (path,
+    None, None). Spark replace file bang temp sibling + os.replace nen
+    mtime doi moi lan snapshot moi hoan tat. Dung lam cache key de
+    dashboard khong giu stale data. Khong doc noi dung file o day.
+    """
+    targets = [
+        str(combined or COMBINED_CSV),
+        str(road or ROAD_SUMMARY_CSV),
+        str(hourly or HOURLY_SUMMARY_CSV),
+        str(weather or WEATHER_SUMMARY_CSV),
+    ]
+    sig = []
+    for target in targets:
+        try:
+            info = Path(target).stat()
+            sig.append((target, info.st_mtime_ns, info.st_size))
+        except OSError:
+            sig.append((target, None, None))
+    return tuple(sig)
+
+
 @st.cache_data
-def load_dashboard_data():
-    """Doc 4 processed snapshots (cached, read-only, khong mutate file)."""
+def _load_snapshots_cached(sig, paths):
+    """Doc 4 processed CSV (cached theo file signature; read-only).
+
+    sig thay doi -> cache miss -> doc lai file moi. Khong goi API/Spark,
+    khong ghi file. sig/paths la tuple hashable (LUU Y: khong dat ten param
+    bat dau bang "_" vi Streamlit se loai khoi cache key -> stale vinh vien).
+    """
+    combined_p, road_p, hourly_p, weather_p = paths
     return (
-        pd.read_csv(COMBINED_CSV),
-        pd.read_csv(ROAD_SUMMARY_CSV),
-        pd.read_csv(HOURLY_SUMMARY_CSV),
-        pd.read_csv(WEATHER_SUMMARY_CSV),
+        pd.read_csv(combined_p),
+        pd.read_csv(road_p),
+        pd.read_csv(hourly_p),
+        pd.read_csv(weather_p),
     )
+
+
+def load_dashboard_data(combined=None, road=None, hourly=None, weather=None):
+    """Doc 4 processed snapshots, tu bust cache khi file thay doi.
+
+    Khong arg -> doc snapshot production (behavior cu giu nguyen).
+    Truyen paths (str/Path) de test voi snapshot tam. Chi doc processed
+    snapshot, KHONG doc raw CSV, KHONG goi API/Spark/collector.
+    """
+    paths = (
+        str(combined or COMBINED_CSV),
+        str(road or ROAD_SUMMARY_CSV),
+        str(hourly or HOURLY_SUMMARY_CSV),
+        str(weather or WEATHER_SUMMARY_CSV),
+    )
+    return _load_snapshots_cached(snapshot_signature(*paths), paths)
+
+
+DASHBOARD_PREV_SNAPSHOT_KEY = "dashboard_prev_snapshot"
+DASHBOARD_SNAPSHOT_SIG_KEY = "dashboard_snapshot_sig"
+DASHBOARD_COHERENT_KEY = "dashboard_coherent_key"
+
+# Versioned snapshot pointer (authoritative): pipeline build snapshot moi trong
+# snapshots/<version>/ rieng; trong luc build, current_snapshot.json van tro A;
+# dashboard chi doc A. Sau FULL process + validate, pointer replace atomically
+# A -> B. Khong bao gio doc mixed-version (combined B + summary A).
+# Legacy snapshot_ready.json + data/processed/*.csv chi dung bootstrap khi chua
+# co pointer (validate coherent moi render); lan process tiep theo tao
+# versioned snapshot dau tien. Khong copy legacy mixed vao versioned storage.
+SNAPSHOT_MARKER = PROCESSED_DIR / "snapshot_ready.json"
+CURRENT_SNAPSHOT_JSON = PROCESSED_DIR / "current_snapshot.json"
+SNAPSHOTS_DIR = PROCESSED_DIR / "snapshots"
+
+
+@st.fragment(run_every=AUTO_REFRESH_SECONDS)
+def _auto_refresh_tick():
+    """Tick nhe chay moi 30s (native fragment, read-only, khong UI).
+
+    Fragment rieng nho nen khong vuong snapshot nhu ca dashboard. Watch
+    snapshot key (marker version khi co, file-sig khi bootstrap) thay vi
+    mtime tung file le. Key doi -> 1 full app rerun de main() load snapshot
+    moi; khong doi -> khong rerun, khong ve lai, khong cham widget/filter.
+    TUYET DOI KHONG goi TomTom/Open-Meteo/collector/run_data_update/
+    run_process_only/Spark o day.
+    """
+    try:
+        key, _ = current_snapshot_key()
+    except Exception:
+        return
+    last = st.session_state.get(DASHBOARD_SNAPSHOT_SIG_KEY)
+    if last is None:
+        st.session_state[DASHBOARD_SNAPSHOT_SIG_KEY] = key
+        return
+    if key != last:
+        st.session_state[DASHBOARD_SNAPSHOT_SIG_KEY] = key
+        st.rerun(scope="app")
+
+
+def _resolve_snapshot_paths(combined=None, road=None, hourly=None, weather=None):
+    """4 processed paths dang str tuple (production default hoac temp test)."""
+    return (
+        str(combined or COMBINED_CSV),
+        str(road or ROAD_SUMMARY_CSV),
+        str(hourly or HOURLY_SUMMARY_CSV),
+        str(weather or WEATHER_SUMMARY_CSV),
+    )
+
+
+def resolve_versioned_paths(pointer, processed_dir=None):
+    """4 CSV paths trong snapshots/<version>/ tu pointer (str tuple).
+
+    pointer: dict tu data_update.read_current_snapshot (da validate).
+    Khong absolute path: snapshot la relative "snapshots/<version>".
+    """
+    from pathlib import Path as _P
+
+    base = _P(processed_dir) if processed_dir is not None else PROCESSED_DIR
+    rel = str(pointer.get("snapshot")).replace("\\", "/")
+    snap_dir = base / rel
+    return (
+        str(snap_dir / "combined_data.csv"),
+        str(snap_dir / "road_summary.csv"),
+        str(snap_dir / "hourly_summary.csv"),
+        str(snap_dir / "weather_summary.csv"),
+    )
+
+
+def current_snapshot_key(paths=None, marker_path=None, pointer_path=None):
+    """Snapshot key dashboard watch (pure IO, khong UI).
+
+    Thu tu uu tien (authoritative):
+    1. Versioned pointer hop le -> ("versioned", version): chi doi khi FULL
+       pipeline publish xong (atomic A->B) -> refresh khong bao gio thay
+       transient mixed-version. Pointer khong doi -> khong doi snapshot.
+    2. Legacy marker hop le (bootstrap, chua co pointer) -> ("marker", version).
+    3. Bootstrap khong marker -> ("files", file-sig) nhu behavior cu.
+    Tra ve (key, pointer_or_marker_or_None). Khong bao gio raise.
+    """
+    try:
+        pointer = data_update.read_current_snapshot(
+            pointer_path if pointer_path is not None else CURRENT_SNAPSHOT_JSON
+        )
+    except Exception:
+        pointer = None
+    if isinstance(pointer, dict) and str(pointer.get("version") or "").strip():
+        return ("versioned", str(pointer["version"])), pointer
+    resolved = tuple(paths) if paths is not None else _resolve_snapshot_paths()
+    try:
+        marker = data_update.read_snapshot_marker(
+            marker_path if marker_path is not None else SNAPSHOT_MARKER
+        )
+    except Exception:
+        marker = None
+    if isinstance(marker, dict) and str(marker.get("version") or "").strip():
+        return ("marker", str(marker["version"])), marker
+    return ("files", snapshot_signature(*resolved)), None
+
+
+def _safe_obs_sum(df):
+    """Tong observation_count (so nguyen >= 0); lech kieu -> -1 (lech marker)."""
+    try:
+        return int(pd.to_numeric(
+            df["observation_count"], errors="coerce").fillna(0).sum())
+    except (KeyError, TypeError, ValueError):
+        return -1
+
+
+def snapshot_frame_counts(combined_df, road_df, hourly_df, weather_df):
+    """Counts thuc te cua 4 frames de so voi marker (pure, khong UI)."""
+    matched, _ = normalize_matched(combined_df["weather_matched"])
+    return {
+        "combined_rows": int(len(combined_df)),
+        "road_observation_sum": _safe_obs_sum(road_df),
+        "hourly_observation_sum": _safe_obs_sum(hourly_df),
+        "weather_observation_sum": _safe_obs_sum(weather_df),
+        "matched_rows": int(matched.sum()),
+    }
+
+
+def _legacy_reconciliation_diagnostics(counts):
+    """Internal reconciliation khi chua co marker (pure, terminal-only).
+
+    Bootstrap: van render files hien co; diagnostics chi de debug,
+    KHONG dua len UI.
+    """
+    diag = []
+    n = counts.get("combined_rows")
+    for label, key in (("road_summary", "road_observation_sum"),
+                       ("hourly_summary", "hourly_observation_sum")):
+        if counts.get(key) != n:
+            diag.append(
+                f"{label} sum {counts.get(key)} != combined {n} (legacy, no marker).")
+    if counts.get("weather_observation_sum") != counts.get("matched_rows"):
+        diag.append(
+            f"weather_summary sum {counts.get('weather_observation_sum')} != "
+            f"matched {counts.get('matched_rows')} (legacy, no marker).")
+    return diag
+
+
+def _validate_frames(frames):
+    """Validate schema + timestamps + tra ve counts (raise khi invalid)."""
+    problems = find_missing_columns(dict(zip(REQUIRED_FILES, frames)))
+    if problems:
+        raise ValueError(f"schema problems: {problems}.")
+    combined_df = frames[0]
+    if combined_df.empty:
+        raise ValueError("combined_data.csv empty.")
+    _, n_invalid = parse_event_timestamps(combined_df)
+    if n_invalid:
+        raise ValueError(f"{n_invalid} bad event_timestamp.")
+    return snapshot_frame_counts(*frames)
+
+
+def load_coherent_snapshot(paths=None, marker_path=None, pointer_path=None,
+                           processed_dir=None):
+    """Load versioned coherent snapshot + RAM fallback + legacy bootstrap.
+
+    - Versioned mode (authoritative): doc current_snapshot.json -> resolve
+      snapshots/<version>/ -> load 4 CSV TRONG CUNG directory do -> validate
+      vs pointer counts (marker check nghiem ngat). Lech -> giu
+      last-known-good RAM + diagnostic ra terminal, KHONG warning banner,
+      KHONG fallback sang legacy (tranh hide error).
+    - Bootstrap (chua co pointer): dung legacy paths (paths hoac production
+      data/processed/*.csv) + legacy marker neu co; validate coherent moi
+      render (diagnostics terminal). Khong copy legacy mixed vao versioned.
+    - RAM fallback van giu nhung correctness KHONG phu thuoc RAM: sau
+      browser/Streamlit/process restart, disk pointer van cho snapshot cu
+      (A) trong luc batch moi (B) dang build.
+    - Tra ve dict {frames, marker, key, syncing, versioned} hoac None khi
+      chua tung co snapshot usable (main hien loi ngan + stop).
+    """
+    key, ref = current_snapshot_key(paths, marker_path, pointer_path)
+    kind = key[0] if isinstance(key, tuple) else None
+    if kind == "versioned":
+        resolved = resolve_versioned_paths(ref, processed_dir)
+        try:
+            frames = _load_snapshots_cached(key, resolved)
+            counts = _validate_frames(frames)
+            diag = data_update.check_versioned_coherence(counts, ref)
+            if diag:
+                raise ValueError("incoherent vs marker: " + "; ".join(diag))
+        except Exception as exc:
+            print(f"[dashboard] snapshot load/validation failed: "
+                  f"{type(exc).__name__}: {exc}")
+            prev = st.session_state.get(DASHBOARD_PREV_SNAPSHOT_KEY)
+            if prev is not None:
+                return {"frames": prev, "marker": None,
+                        "key": st.session_state.get(DASHBOARD_COHERENT_KEY),
+                        "syncing": True, "versioned": True}
+            return None
+        st.session_state[DASHBOARD_PREV_SNAPSHOT_KEY] = frames
+        st.session_state[DASHBOARD_COHERENT_KEY] = key
+        return {"frames": frames, "marker": ref, "key": key,
+                "syncing": False, "versioned": True}
+    # Legacy/bootstrap mode (khong pointer): behavior cu + validation.
+    resolved = tuple(paths) if paths is not None else _resolve_snapshot_paths()
+    try:
+        frames = _load_snapshots_cached(key, resolved)
+        counts = _validate_frames(frames)
+        if ref is not None:
+            diag = data_update.check_snapshot_coherence(counts, ref)
+            if diag:
+                raise ValueError("incoherent vs marker: " + "; ".join(diag))
+        else:
+            for line in _legacy_reconciliation_diagnostics(counts):
+                print(f"[dashboard] snapshot diagnostic: {line}")
+    except Exception as exc:
+        print(f"[dashboard] snapshot load/validation failed: "
+              f"{type(exc).__name__}: {exc}")
+        prev = st.session_state.get(DASHBOARD_PREV_SNAPSHOT_KEY)
+        if prev is not None:
+            return {"frames": prev, "marker": None,
+                    "key": st.session_state.get(DASHBOARD_COHERENT_KEY),
+                    "syncing": True, "versioned": False}
+        return None
+    st.session_state[DASHBOARD_PREV_SNAPSHOT_KEY] = frames
+    st.session_state[DASHBOARD_COHERENT_KEY] = key
+    return {"frames": frames, "marker": ref, "key": key,
+            "syncing": False, "versioned": False}
 
 
 # Thu tu semantic cho filter trang thai (chi level quan sat duoc hien thi).
@@ -413,6 +586,36 @@ def available_filter_options(combined_df):
     present = set(combined_df["congestion_level"].dropna().astype(str).tolist())
     levels = [lv for lv in LEVEL_SEMANTIC_ORDER if lv in present]
     return roads, levels
+
+
+def available_observation_dates(event_hanoi):
+    """Distinct Hanoi calendar dates co du lieu, newest -> oldest (pure).
+
+    Tra ve list[datetime.date]; input rong -> []. Chi ngay thuc su ton tai
+    trong du lieu, khong tao ngay khong co quan sat. Khong mutate input.
+    """
+    dates = {d for d in event_hanoi.dt.date if pd.notna(d)}
+    return sorted(dates, reverse=True)
+
+
+def filter_observations_by_date(combined_df, event_hanoi, selected_date):
+    """Loc rows thuoc 1 Hanoi calendar date, tra ve COPY (pure).
+
+    selected_date la datetime.date (so theo ngay Hanoi nhu dashboard).
+    Ngay khong co trong du lieu -> ValueError ro rang (khong tra empty
+    am tham). Khong mutate input, khong ghi CSV.
+    """
+    label = (
+        selected_date.strftime("%d/%m/%Y")
+        if hasattr(selected_date, "strftime") else str(selected_date)
+    )
+    mask = event_hanoi.dt.date == selected_date
+    day_df = combined_df.loc[mask.fillna(False)].copy()
+    if day_df.empty:
+        raise ValueError(
+            f"Ngày {label} không có dữ liệu quan sát."
+        )
+    return day_df
 
 
 def filter_detail_observations(combined_df, selected_roads, selected_levels):
@@ -475,6 +678,87 @@ def prepare_detail_table(filtered_df, event_hanoi):
             }
         )
     return pd.DataFrame(rows, columns=DETAIL_TABLE_COLUMNS)
+
+
+def style_dark(fig):
+    """Ap dark navy styling cho 1 Plotly figure (pure layout, khong doi data).
+
+    Dung template plotly_dark + nen trong suot de hop card dashboard.
+    Tra ve chinh fig (cho phep chain).
+    """
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "#e6ebf2"},
+        margin={"l": 8, "r": 8, "t": 48, "b": 8},
+    )
+    return fig
+
+
+LATEST_TABLE_COLUMNS = [
+    "Thời gian",
+    "Tuyến đường",
+    "Tốc độ hiện tại (km/h)",
+    "Tốc độ thông thoáng (km/h)",
+    "Ùn tắc (%)",
+    "Trạng thái",
+]
+
+
+def prepare_latest_traffic_table(latest_df, event_hanoi):
+    """Bang 1 observation moi nhat / tuyen (pure, copy moi).
+
+    Sort road ASC (deterministic); gio Hanoi dd/mm/YYYY HH:MM; so 1 decimal.
+    Khong mutate input, khong ghi CSV.
+    """
+    work = latest_df.sort_values(
+        "road_name", ascending=True, kind="mergesort"
+    ).copy()
+    hanoi = event_hanoi.loc[work.index].dt.tz_convert(HANOI_TZ)
+    rows = []
+    for idx, row in work.iterrows():
+        rows.append(
+            {
+                "Thời gian": hanoi.loc[idx].strftime("%d/%m/%Y %H:%M"),
+                "Tuyến đường": str(row["road_name"]),
+                "Tốc độ hiện tại (km/h)": f"{float(row['current_speed']):.1f}",
+                "Tốc độ thông thoáng (km/h)": f"{float(row['free_flow_speed']):.1f}",
+                "Ùn tắc (%)": f"{float(row['congestion_percent']):.1f}",
+                "Trạng thái": str(row["congestion_level"]),
+            }
+        )
+    return pd.DataFrame(rows, columns=LATEST_TABLE_COLUMNS)
+
+
+def latest_matched_weather(combined_df, event_hanoi):
+    """Weather tu matched observation moi nhat + dem mua (pure, descriptive).
+
+    Tra ve dict (road_name, observed_hanoi, temperature, humidity, rain,
+    wind_speed, weather_code, rain_count, matched_count) hoac None khi chua
+    co observation nao ghep duoc thoi tiet. Chi mo ta du lieu, KHONG causal.
+    Khong mutate input, khong ghi CSV, khong goi API.
+    """
+    mask, _ = normalize_matched(combined_df["weather_matched"])
+    matched = combined_df.loc[mask].copy()
+    if matched.empty:
+        return None
+    instants = pd.to_datetime(event_hanoi.loc[matched.index], utc=True)
+    row = matched.loc[instants.idxmax()]
+    observed = event_hanoi.loc[instants.idxmax()].tz_convert(HANOI_TZ)
+    rain_n = int((pd.to_numeric(matched["rain"], errors="coerce") > 0).sum())
+    code = row.get("weather_code")
+    return {
+        "road_name": str(row["road_name"]),
+        "observed_hanoi": observed,
+        "temperature": _optional_number(row.get("temperature")),
+        "humidity": _optional_number(row.get("humidity")),
+        "rain": _optional_number(row.get("rain")),
+        "wind_speed": _optional_number(row.get("wind_speed")),
+        "weather_code": None if pd.isna(code) else int(code),
+        "rain_count": rain_n,
+        "matched_count": len(matched),
+    }
 
 
 def _require_chart_frame(df, label, numeric_cols, int_cols=()):
@@ -865,15 +1149,6 @@ def render_road_management_sidebar(analyzed_road_names):
     )
     if monitored_names:
         st.sidebar.write(", ".join(monitored_names))
-    if analyzed_road_names is not None and monitored_names:
-        n_covered = len(set(monitored_names) & set(analyzed_road_names))
-        st.sidebar.caption(
-            f"{n_covered}/{len(monitored_names)} tuyến hiện có dữ liệu phân tích."
-        )
-    st.sidebar.caption(
-        "Danh sách theo dõi (roads.csv) có thể khác danh sách đã có dữ "
-        "liệu phân tích — đây là trạng thái hợp lệ."
-    )
 
     with st.sidebar.expander("➕ Thêm tuyến"):
         available = available_catalog_roads(HANOI_ROAD_CATALOG, monitored_names)
@@ -1007,24 +1282,19 @@ def _handle_data_update():
     )
 
 
-def render_data_update_sidebar():
-    """Section sidebar nut cap nhat du lieu (Phase 9.2).
+def render_data_update_header():
+    """Nut cap nhat du lieu o header (backend Phase 9.2 giu nguyen).
 
-    Chi goi orchestrator public run_data_update(); khong goi truc tiep
-    TomTom/Open-Meteo/collector/Spark. Pipeline chi chay khi user bam nut.
+    Chi goi orchestrator public run_data_update() qua _handle_data_update();
+    khong goi truc tiep TomTom/Open-Meteo/collector/Spark. Pipeline chi chay
+    khi user bam nut (khong auto-run).
     """
-    st.sidebar.markdown("---")
-    st.sidebar.header("🔄 Cập nhật dữ liệu")
     _show_update_flash()
-    st.sidebar.caption(
-        "Thu thập dữ liệu giao thông và thời tiết mới cho các tuyến đang "
-        "theo dõi, sau đó chạy Apache Spark để cập nhật dashboard. "
-        "Cập nhật theo yêu cầu — quá trình có thể mất khoảng một phút."
-    )
-    if st.sidebar.button(
+    if st.button(
         "🔄 Cập nhật dữ liệu",
         key="update_data_button",
         use_container_width=True,
+        type="secondary",
     ):
         _handle_data_update()
 
@@ -1038,74 +1308,60 @@ def main():
 
     inject_css()
 
-    st.title("Phân tích giao thông Hà Nội")
-    st.caption(
-        "Quan trắc giao thông kết hợp thời tiết tại Hà Nội — "
-        "xử lý bằng Apache Spark, dashboard trình bày kết quả trên dữ liệu đã thu thập."
-    )
+    # ---- Near-realtime auto-refresh tick (read-only, khong API/Spark) ----
+    # Fragment tu chay moi 30s; chi kich full rerun khi snapshot key doi.
+    _auto_refresh_tick()
 
-    # ---- Required file guard (khong tu tao artifact) ----
-    missing = find_missing_files()
-    if missing:
-        st.error(
-            "Thiếu file dữ liệu đã xử lý: " + ", ".join(missing) + ". "
-            "Hãy chạy xử lý Phase 5/6 trước khi mở dashboard."
-        )
+    # ---- Versioned snapshot guard (authoritative) + legacy bootstrap ----
+    # Neu co versioned pointer hop le: khong yeu cau legacy files (dashboard
+    # chi doc snapshots/<version>/). Neu chua co pointer: giu guard cu de bao
+    # thieu file ro rang truoc khi thu legacy coherent load.
+    try:
+        _bootstrap_pointer = data_update.read_current_snapshot(CURRENT_SNAPSHOT_JSON)
+    except Exception:
+        _bootstrap_pointer = None
+    if not isinstance(_bootstrap_pointer, dict):
+        missing = find_missing_files()
+        if missing:
+            st.error(
+                "Thiếu file dữ liệu đã xử lý: " + ", ".join(missing) + ". "
+                "Hãy chạy xử lý Phase 5/6 trước khi mở dashboard."
+            )
+            st.stop()
+
+    # ---- Coherent snapshot load (versioned-gated, last-known-good fallback) ----
+    # Chi render snapshot coherent trong cung version dir; transient build (B)
+    # chua publish thi pointer van A -> van render A, khong mixed-version.
+    # Diagnostic ra terminal (khong warning banner len UI).
+    snapshot = load_coherent_snapshot()
+    if snapshot is None:
+        st.error("Chưa có dữ liệu hiển thị. Vui lòng thử lại sau ít phút.")
         st.stop()
-
-    combined_df, road_df, hourly_df, weather_df = load_dashboard_data()
-
-    # ---- Schema guards ----
-    problems = find_missing_columns(
-        {
-            "combined_data.csv": combined_df,
-            "road_summary.csv": road_df,
-            "hourly_summary.csv": hourly_df,
-            "weather_summary.csv": weather_df,
-        }
-    )
-    if problems:
-        for name, cols in problems.items():
-            st.error(f"File {name} thiếu cột: " + ", ".join(cols) + ".")
-        st.stop()
-
-    # ---- Empty guards ----
-    if combined_df.empty:
-        st.error("combined_data.csv không có dòng dữ liệu nào.")
-        st.stop()
-    for label, df in (
-        ("road_summary.csv", road_df),
-        ("hourly_summary.csv", hourly_df),
-        ("weather_summary.csv", weather_df),
-    ):
-        if df.empty:
-            st.warning(f"File {label} hiện trống — chưa có dữ liệu tổng hợp để hiển thị.")
+    combined_df, road_df, hourly_df, weather_df = snapshot["frames"]
+    if snapshot.get("syncing"):
+        st.caption("Đang đồng bộ dữ liệu mới...")
 
     # ---- Timestamp presentation (copy in-memory, khong sua CSV) ----
-    event_utc, n_invalid = parse_event_timestamps(combined_df)
-    if n_invalid:
-        st.error(
-            f"Có {n_invalid} event_timestamp không parse được — "
-            "kiểm tra lại Phase 5 thay vì bỏ qua ngầm."
-        )
-        st.stop()
+    event_utc, _ = parse_event_timestamps(combined_df)
     event_hanoi = to_hanoi(event_utc)
     latest_hanoi = event_hanoi.max()
 
-    # ---- Sidebar: thong tin du lieu (read-only) ----
-    st.sidebar.header("Thông tin dữ liệu")
+    # ---- Sidebar: control panel (status + compact stats + road mgmt) ----
+    # KPI luon global; cac filter ngay/tuyen/level chi nam o section
+    # Phan tich chi tiet phia duoi.
+    st.sidebar.markdown("### 🚗 Traffic Analytics")
+    st.sidebar.markdown(
+        '<div class="sidebar-status"><span class="status-dot">●</span>'
+        "Hệ thống hoạt động</div>",
+        unsafe_allow_html=True,
+    )
     n_obs = len(combined_df)
     n_roads = int(road_df["road_name"].nunique()) if not road_df.empty else 0
-    n_matched = int(matched_mask(combined_df).sum())
     st.sidebar.markdown(
         f"""
-        <div class="sidebar-metric"><span class="sidebar-metric-icon">📊</span>Số quan trắc: {n_obs}</div>
-        <div class="sidebar-metric"><span class="sidebar-metric-icon">🛣️</span>Số tuyến: {n_roads}</div>
-        <div class="sidebar-metric"><span class="sidebar-metric-icon">🌦️</span>Ghép thời tiết: {n_matched}</div>
-        <div class="sidebar-divider"></div>
-        <div class="sidebar-metric"><span class="sidebar-metric-icon">📅</span>{event_hanoi.min().strftime('%Y-%m-%d %H:%M')} → {event_hanoi.max().strftime('%Y-%m-%d %H:%M')}</div>
-        <div class="sidebar-divider"></div>
-        <div class="sidebar-metric"><span class="sidebar-metric-icon">🕐</span>Cập nhật: {latest_hanoi.strftime('%Y-%m-%d %H:%M')} (giờ HN)</div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">📊</span>{n_obs} Quan sát</div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🛣️</span>{n_roads} Tuyến</div>
+        <div class="sidebar-metric"><span class="sidebar-metric-icon">🕐</span>{latest_hanoi.strftime('%H:%M')} Cập nhật</div>
         """,
         unsafe_allow_html=True,
     )
@@ -1115,32 +1371,61 @@ def main():
         set(combined_df["road_name"].dropna().astype(str).tolist())
     )
 
-    # ---- Sidebar: one-click data update (orchestrator, rerun de refresh) ----
-    render_data_update_sidebar()
+    st.sidebar.markdown("---")
+    st.sidebar.caption("TomTom · Open-Meteo")
 
-    # ---- Tong quan: 6 KPI tu snapshot (khong delta, khong live claim) ----
-    st.markdown('<div class="section-header"><span class="section-icon">📈</span><h2>Tổng quan</h2></div>', unsafe_allow_html=True)
+    # ---- Metrics global tu snapshot (validation giu o backend) ----
+    # Reconciliation diagnostics chi ra terminal, KHONG warning banner len UI.
     try:
         metrics = calculate_overview_metrics(
             combined_df, road_df, hourly_df, weather_df, event_hanoi
         )
     except ValueError as exc:
-        st.error(str(exc))
+        print(f"[dashboard] snapshot diagnostic: metrics failed: {exc}")
+        st.error("Chưa có dữ liệu hiển thị. Vui lòng thử lại sau ít phút.")
         st.stop()
     for warning in metrics["warnings"]:
-        st.warning(warning)
+        print(f"[dashboard] snapshot diagnostic: {warning}")
 
+    # ---- Hero header (single title) | live status + update ----
+    hdr_left, hdr_right = st.columns([3, 1])
+    with hdr_left:
+        st.markdown(
+            '<div class="dash-title">🚦 Hanoi Traffic Analytics</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="dash-subtitle">Theo dõi giao thông và thời tiết '
+            "tại Hà Nội</div>",
+            unsafe_allow_html=True,
+        )
+    with hdr_right:
+        st.markdown(
+            '<div class="status-line"><span class="status-dot">●</span> '
+            "ĐANG THEO DÕI</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="header-meta">Cập nhật: '
+            f"<b>{latest_hanoi.strftime('%H:%M')}</b></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="header-meta">Tự động · {AUTO_REFRESH_SECONDS}s</div>',
+            unsafe_allow_html=True,
+        )
+        render_data_update_header()
+
+    # ---- 4 KPI cards global (khong chiu anh huong detail filters) ----
     kpi_cards = [
-        (KPI_ICONS["n_roads"], "Tuyến đường", str(metrics['n_roads'])),
-        (KPI_ICONS["n_obs"], "Quan sát", str(metrics['n_obs'])),
-        (KPI_ICONS["avg_speed"], "Tốc độ TB", f"{metrics['avg_speed']:.1f} km/h"),
-        (KPI_ICONS["avg_congestion"], "Ùn tắc TB", f"{metrics['avg_congestion']:.1f}%"),
-        (KPI_ICONS["matched_pct"], "Ghép thời tiết", f"{metrics['matched_pct']:.1f}%"),
-        (KPI_ICONS["latest_hanoi"], "Dữ liệu mới nhất", metrics["latest_hanoi"].strftime("%d/%m/%Y %H:%M")),
+        (KPI_ICONS["n_roads"], "TUYẾN ĐƯỜNG", str(metrics['n_roads'])),
+        (KPI_ICONS["avg_speed"], "TỐC ĐỘ TRUNG BÌNH", f"{metrics['avg_speed']:.1f} km/h"),
+        (KPI_ICONS["n_obs"], "QUAN SÁT", str(metrics['n_obs'])),
+        (KPI_ICONS["avg_congestion"], "ÙN TẮC TRUNG BÌNH", f"{metrics['avg_congestion']:.1f}%"),
     ]
-    cols = st.columns(6)
+    kpi_cols = st.columns(4)
     for i, (icon, label, value) in enumerate(kpi_cards):
-        with cols[i]:
+        with kpi_cols[i]:
             st.markdown(
                 f"""
                 <div class="kpi-card">
@@ -1150,114 +1435,79 @@ def main():
                 """,
                 unsafe_allow_html=True,
             )
-    st.caption("Các chỉ số được tính từ snapshot dữ liệu đã xử lý gần nhất.")
 
-    if metrics["top_road"] is not None:
-        st.markdown(
-            f"""
-            <div class="insight-card">
-                <div class="insight-title">Tuyến ùn tắc nhất</div>
-                <div class="insight-content">
-                    Tuyến có mức ùn tắc trung bình cao nhất trong dữ liệu đã thu thập: 
-                    {metrics['top_road']['road_name']} 
-                    ({metrics['top_road']['avg_congestion_percent']:.1f}%).
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    weather_counts = metrics["weather_counts"]
-    if "Không mưa" in weather_counts and "Mưa" in weather_counts:
-        st.markdown(
-            f"""
-            <div class="insight-card">
-                <div class="insight-title">Điều kiện thời tiết</div>
-                <div class="insight-content">
-                    {weather_counts['Không mưa']} quan sát không mưa, 
-                    {weather_counts['Mưa']} quan sát mưa.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    elif weather_counts:
-        only_name, only_count = next(iter(weather_counts.items()))
-        st.markdown(
-            f"""
-            <div class="insight-card">
-                <div class="insight-title">Điều kiện thời tiết</div>
-                <div class="insight-content">
-                    {only_count} quan sát {only_name.lower()}.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown('<div class="section-header"><span class="section-icon">🗺️</span><h2>Bản đồ giao thông</h2></div>', unsafe_allow_html=True)
+    # ---- Du lieu dung chung cho grid (prepare truoc, fail-fast) ----
     latest_df = get_latest_road_observations(combined_df, event_utc)
     valid_df, invalid_roads = validate_map_coordinates(latest_df)
-    if invalid_roads:
-        st.warning(
-            "Bỏ qua marker thiếu/sai tọa độ của tuyến: "
-            + ", ".join(invalid_roads)
-            + " (không đặt ở 0,0)."
-        )
-    bad_levels = validate_congestion_levels(valid_df)
-    if bad_levels:
-        st.error(
-            "Trạng thái ùn tắc lạ trên quan sát mới nhất (không thể tô màu): "
-            + ", ".join(bad_levels)
-            + ". Kiểm tra lại Phase 5."
-        )
-        valid_df = valid_df[
-            valid_df["congestion_level"].isin(list(CONGESTION_COLORS))
-        ]
-    if valid_df.empty:
-        st.error("Không còn marker hợp lệ nào để vẽ bản đồ.")
-    else:
-        traffic_map, n_markers, _ = build_traffic_map(valid_df, event_hanoi)
-        st_folium(traffic_map, use_container_width=True, height=550, returned_objects=[])
-        st.caption(
-            "Mỗi marker là quan sát mới nhất của một tuyến trong snapshot đã xử lý; "
-            "màu sắc thể hiện trạng thái ùn tắc của quan sát đó (không phải trực tiếp)."
-        )
-
-    st.markdown('<div class="section-header"><span class="section-icon">🛣️</span><h2>Phân tích theo tuyến đường</h2></div>', unsafe_allow_html=True)
     try:
         speed_df, congestion_df = prepare_road_chart_data(road_df)
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
-    road_cols = st.columns(2)
-    with road_cols[0]:
-        fig_speed = go.Figure(
-            go.Bar(
-                x=speed_df["avg_speed"],
-                y=speed_df["road_name"],
-                orientation="h",
-                text=speed_df["avg_speed_label"],
-                textposition="outside",
-                marker_color="#1f77b4",
-                customdata=speed_df[["observation_count"]].to_numpy(),
+    try:
+        hourly_chart_df = prepare_hourly_chart_data(hourly_df)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    # ---- Main grid: map 60% | charts 40% ----
+    grid_map, grid_charts = st.columns([3, 2])
+    with grid_map:
+        st.markdown('<div class="section-header"><span class="section-icon">🗺️</span><h2>Bản đồ tình hình giao thông Hà Nội</h2></div>', unsafe_allow_html=True)
+        if invalid_roads:
+            st.warning(
+                "Bỏ qua marker thiếu/sai tọa độ của tuyến: "
+                + ", ".join(invalid_roads)
+                + " (không đặt ở 0,0)."
+            )
+        bad_levels = validate_congestion_levels(valid_df)
+        if bad_levels:
+            st.error(
+                "Trạng thái ùn tắc lạ trên quan sát mới nhất (không thể tô màu): "
+                + ", ".join(bad_levels)
+                + ". Kiểm tra lại Phase 5."
+            )
+            valid_df = valid_df[
+                valid_df["congestion_level"].isin(list(CONGESTION_COLORS))
+            ]
+        if valid_df.empty:
+            st.error("Không còn marker hợp lệ nào để vẽ bản đồ.")
+        else:
+            traffic_map, n_markers, _ = build_traffic_map(valid_df, event_hanoi)
+            st_folium(traffic_map, use_container_width=True, height=650, returned_objects=[])
+            st.markdown(
+                " • ".join(
+                    f"{STATUS_EMOJI.get(lv, '⚪')} {lv}"
+                    for lv in CONGESTION_COLORS
+                )
+            )
+    with grid_charts:
+        st.markdown('<div class="section-header"><span class="section-icon">📈</span><h2>Tốc độ trung bình theo thời gian</h2></div>', unsafe_allow_html=True)
+        fig_hspeed = go.Figure(
+            go.Scatter(
+                x=hourly_chart_df["local_hour"],
+                y=hourly_chart_df["avg_speed"],
+                mode="lines+markers",
+                marker={"size": 8},
+                customdata=hourly_chart_df[
+                    ["time_window", "avg_congestion_percent", "observation_count"]
+                ].to_numpy(),
                 hovertemplate=(
-                    "Tuyến: %{y}<br>Tốc độ TB: %{x:.1f} km/h<br>"
-                    "Quan sát: %{customdata[0]}<extra></extra>"
+                    "Giờ: %{x}<br>Khung giờ: %{customdata[0]}<br>"
+                    "Tốc độ TB: %{y:.1f} km/h<br>Ùn tắc TB: %{customdata[1]:.1f}%<br>"
+                    "Quan sát: %{customdata[2]}<extra></extra>"
                 ),
             )
         )
-        fig_speed.update_layout(
-            title="Tốc độ trung bình theo tuyến",
-            xaxis_title="Tốc độ trung bình (km/h)",
-            yaxis_title="",
-            yaxis={
-                "categoryorder": "array",
-                "categoryarray": speed_df["road_name"].tolist(),
-            },
+        fig_hspeed.update_layout(
+            title="Tốc độ trung bình theo thời gian",
+            xaxis_title="Giờ trong ngày",
+            yaxis_title="Tốc độ trung bình (km/h)",
+            xaxis={"dtick": 1},
         )
-        st.plotly_chart(fig_speed, width="stretch")
-    with road_cols[1]:
+        style_dark(fig_hspeed)
+        st.plotly_chart(fig_hspeed, width="stretch")
+        st.markdown('<div class="section-header"><span class="section-icon">📊</span><h2>Mức độ ùn tắc theo tuyến đường</h2></div>', unsafe_allow_html=True)
         fig_cong = go.Figure(
             go.Bar(
                 x=congestion_df["avg_congestion_percent"],
@@ -1282,143 +1532,258 @@ def main():
                 "categoryarray": congestion_df["road_name"].tolist(),
             },
         )
+        style_dark(fig_cong)
         st.plotly_chart(fig_cong, width="stretch")
 
-    st.markdown('<div class="section-header"><span class="section-icon">⏰</span><h2>Phân tích theo thời gian</h2></div>', unsafe_allow_html=True)
-    try:
-        hourly_chart_df = prepare_hourly_chart_data(hourly_df)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-    fig_hourly = go.Figure(
-        go.Scatter(
-            x=hourly_chart_df["local_hour"],
-            y=hourly_chart_df["avg_congestion_percent"],
-            mode="lines+markers",
-            marker={"size": 9},
-            text=hourly_chart_df["avg_congestion_label"],
-            textposition="top center",
-            customdata=hourly_chart_df[
-                ["time_window", "avg_speed", "observation_count"]
-            ].to_numpy(),
-            hovertemplate=(
-                "Giờ: %{x}<br>Khung giờ: %{customdata[0]}<br>"
-                "Ùn tắc TB: %{y:.1f}%<br>Tốc độ TB: %{customdata[1]:.1f} km/h<br>"
-                "Quan sát: %{customdata[2]}<extra></extra>"
-            ),
-        )
-    )
-    fig_hourly.update_layout(
-        title="Mức ùn tắc trung bình theo giờ",
-        xaxis_title="Giờ trong ngày",
-        yaxis_title="Mức ùn tắc trung bình (%)",
-        xaxis={"dtick": 1},
-    )
-    st.plotly_chart(fig_hourly, width="stretch")
-    st.caption("Chỉ hiển thị các giờ có quan sát trong snapshot dữ liệu.")
-
-    st.markdown('<div class="section-header"><span class="section-icon">🌦️</span><h2>Giao thông và thời tiết</h2></div>', unsafe_allow_html=True)
-    try:
-        weather_chart_df = prepare_weather_chart_data(weather_df)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-    weather_cols = st.columns(2)
-    with weather_cols[0]:
-        fig_wspeed = go.Figure(
-            go.Bar(
-                x=weather_chart_df["weather_condition"],
-                y=weather_chart_df["avg_speed"],
-                text=weather_chart_df["avg_speed_label"],
-                textposition="outside",
-                marker_color=["#1f77b4", "#17becf"][
-                    : len(weather_chart_df)
-                ],
-                customdata=weather_chart_df[["observation_count"]].to_numpy(),
-                hovertemplate=(
-                    "Điều kiện: %{x}<br>Tốc độ TB: %{y:.1f} km/h<br>"
-                    "Quan sát: %{customdata[0]}<extra></extra>"
-                ),
+    # ---- Second row: latest traffic 65% | weather 35% ----
+    row2_left, row2_right = st.columns([2, 1])
+    with row2_left:
+        st.markdown('<div class="section-header"><span class="section-icon">📋</span><h2>Giao thông mới nhất</h2></div>', unsafe_allow_html=True)
+        latest_table_df = prepare_latest_traffic_table(latest_df, event_hanoi)
+        st.dataframe(latest_table_df, hide_index=True, width="stretch")
+    with row2_right:
+        st.markdown('<div class="section-header"><span class="section-icon">☁️</span><h2>Thời tiết hiện tại</h2></div>', unsafe_allow_html=True)
+        wx = latest_matched_weather(combined_df, event_hanoi)
+        if wx is None:
+            st.write("Chưa có quan sát nào ghép được dữ liệu thời tiết.")
+        else:
+            temp_txt = f"{wx['temperature']:.1f} °C" if wx["temperature"] is not None else "Không có dữ liệu"
+            hum_txt = f"{wx['humidity']:.1f} %" if wx["humidity"] is not None else "Không có dữ liệu"
+            rain_txt = f"{wx['rain']:.1f} mm" if wx["rain"] is not None else "Không có dữ liệu"
+            wind_txt = f"{wx['wind_speed']:.1f} m/s" if wx["wind_speed"] is not None else "Không có dữ liệu"
+            code_txt = str(wx["weather_code"]) if wx["weather_code"] is not None else "—"
+            st.markdown(
+                f"""
+                <div class="card">
+                    <div class="wx-label">Nhiệt độ</div>
+                    <div class="wx-value">{temp_txt}</div>
+                    <div class="wx-label">Độ ẩm</div>
+                    <div class="wx-value">{hum_txt}</div>
+                    <div class="wx-label">Lượng mưa</div>
+                    <div class="wx-value">{rain_txt}</div>
+                    <div class="wx-label">Tốc độ gió</div>
+                    <div class="wx-value">{wind_txt}</div>
+                    <div class="wx-label">Mã thời tiết</div>
+                    <div class="wx-value">{code_txt}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-        )
-        fig_wspeed.update_layout(
-            title="Tốc độ trung bình theo điều kiện thời tiết",
-            xaxis_title="",
-            yaxis_title="Tốc độ trung bình (km/h)",
-            xaxis={
-                "categoryorder": "array",
-                "categoryarray": weather_chart_df["weather_condition"].tolist(),
-            },
-        )
-        st.plotly_chart(fig_wspeed, width="stretch")
-    with weather_cols[1]:
-        fig_wcong = go.Figure(
-            go.Bar(
-                x=weather_chart_df["weather_condition"],
-                y=weather_chart_df["avg_congestion_percent"],
-                text=weather_chart_df["avg_congestion_label"],
-                textposition="outside",
-                marker_color=["#1f77b4", "#17becf"][
-                    : len(weather_chart_df)
-                ],
-                customdata=weather_chart_df[["observation_count"]].to_numpy(),
-                hovertemplate=(
-                    "Điều kiện: %{x}<br>Ùn tắc TB: %{y:.1f}%<br>"
-                    "Quan sát: %{customdata[0]}<extra></extra>"
-                ),
+            st.caption(
+                f"{wx['road_name']} · "
+                f"{wx['observed_hanoi'].strftime('%d/%m/%Y %H:%M')}"
             )
-        )
-        fig_wcong.update_layout(
-            title="Mức ùn tắc trung bình theo điều kiện thời tiết",
-            xaxis_title="",
-            yaxis_title="Mức ùn tắc trung bình (%)",
-            xaxis={
-                "categoryorder": "array",
-                "categoryarray": weather_chart_df["weather_condition"].tolist(),
-            },
-        )
-        st.plotly_chart(fig_wcong, width="stretch")
-    st.caption(
-        "Điều kiện thời tiết trong dữ liệu: "
-        + " • ".join(
-            f"{row['weather_condition']}: {int(row['observation_count'])} quan sát"
-            for _, row in weather_chart_df.iterrows()
-        )
-        + "."
-    )
-    st.caption(
-        "Kết quả chỉ mô tả các quan sát đã thu thập, không chứng minh "
-        "quan hệ nhân quả giữa thời tiết và giao thông."
-    )
 
-    st.markdown('<div class="section-header"><span class="section-icon">📋</span><h2>Chi tiết quan sát</h2></div>', unsafe_allow_html=True)
-    st.caption(
-        "Bộ lọc bên dưới chỉ áp dụng cho bảng chi tiết, không thay đổi "
-        "các KPI, bản đồ hoặc biểu đồ tổng hợp phía trên."
+    st.markdown('<div class="section-header"><span class="section-icon">📋</span><h2>Phân tích chi tiết</h2></div>', unsafe_allow_html=True)
+    date_options = available_observation_dates(event_hanoi)
+    selected_date = st.selectbox(
+        "Ngày xem",
+        options=date_options,
+        index=0,
+        format_func=lambda d: d.strftime("%d/%m/%Y"),
+        key="detail_date",
     )
     roads_options, levels_options = available_filter_options(combined_df)
     filter_cols = st.columns(2)
     with filter_cols[0]:
         selected_roads = st.multiselect(
-            "Tuyến đường", options=roads_options, default=roads_options
+            "Tuyến đường", options=roads_options, default=roads_options,
+            key="detail_roads",
         )
     with filter_cols[1]:
         selected_levels = st.multiselect(
-            "Trạng thái giao thông", options=levels_options, default=levels_options
+            "Trạng thái giao thông", options=levels_options, default=levels_options,
+            key="detail_levels",
         )
     try:
-        filtered_df = filter_detail_observations(
+        day_df = filter_observations_by_date(
+            combined_df, event_hanoi, selected_date
+        )
+        # Road/status loc tren FULL snapshot (giu validation hien tai);
+        # giao voi ngay da chon (AND giao hoan: ket qua giong loc
+        # date -> roads -> levels; tuyen hop le nhung vang mat trong ngay
+        # cho empty-state than thien thay vi ValueError).
+        base_df = filter_detail_observations(
             combined_df, selected_roads, selected_levels
         )
+        filtered_df = base_df.loc[base_df.index.isin(day_df.index)].copy()
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
-    st.write(f"Hiển thị {len(filtered_df)} / {len(combined_df)} quan sát")
+    date_label = selected_date.strftime("%d/%m/%Y")
+    st.write(
+        f"Hiển thị {len(filtered_df)} / {len(day_df)} "
+        f"quan sát trong ngày {date_label}"
+    )
     if filtered_df.empty:
-        st.write("Không có quan sát phù hợp với bộ lọc hiện tại.")
+        st.write("Không có quan sát phù hợp với bộ lọc trong ngày đã chọn.")
     else:
         detail_df = prepare_detail_table(filtered_df, event_hanoi)
         st.dataframe(detail_df, hide_index=True, width="stretch")
+
+    # ---- Phan tich bo sung (expander: giu functionality Phase 7, UI gon) ----
+    with st.expander("📊 Phân tích bổ sung", expanded=False):
+        if metrics["top_road"] is not None:
+            st.markdown(
+                f"""
+                <div class="insight-card">
+                    <div class="insight-title">Tuyến ùn tắc nhất</div>
+                    <div class="insight-content">
+                        Tuyến có mức ùn tắc trung bình cao nhất trong dữ liệu đã thu thập:
+                        {metrics['top_road']['road_name']}
+                        ({metrics['top_road']['avg_congestion_percent']:.1f}%).
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        weather_counts = metrics["weather_counts"]
+        if "Không mưa" in weather_counts and "Mưa" in weather_counts:
+            st.markdown(
+                f"""
+                <div class="insight-card">
+                    <div class="insight-title">Điều kiện thời tiết</div>
+                    <div class="insight-content">
+                        {weather_counts['Không mưa']} quan sát không mưa,
+                        {weather_counts['Mưa']} quan sát mưa.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        elif weather_counts:
+            only_name, only_count = next(iter(weather_counts.items()))
+            st.markdown(
+                f"""
+                <div class="insight-card">
+                    <div class="insight-title">Điều kiện thời tiết</div>
+                    <div class="insight-content">
+                        {only_count} quan sát {only_name.lower()}.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        fig_hourly = go.Figure(
+            go.Scatter(
+                x=hourly_chart_df["local_hour"],
+                y=hourly_chart_df["avg_congestion_percent"],
+                mode="lines+markers",
+                marker={"size": 9},
+                text=hourly_chart_df["avg_congestion_label"],
+                textposition="top center",
+                customdata=hourly_chart_df[
+                    ["time_window", "avg_speed", "observation_count"]
+                ].to_numpy(),
+                hovertemplate=(
+                    "Giờ: %{x}<br>Khung giờ: %{customdata[0]}<br>"
+                    "Ùn tắc TB: %{y:.1f}%<br>Tốc độ TB: %{customdata[1]:.1f} km/h<br>"
+                    "Quan sát: %{customdata[2]}<extra></extra>"
+                ),
+            )
+        )
+        fig_hourly.update_layout(
+            title="Mức ùn tắc trung bình theo giờ",
+            xaxis_title="Giờ trong ngày",
+            yaxis_title="Mức ùn tắc trung bình (%)",
+            xaxis={"dtick": 1},
+        )
+        style_dark(fig_hourly)
+        st.plotly_chart(fig_hourly, width="stretch")
+        fig_speed = go.Figure(
+            go.Bar(
+                x=speed_df["avg_speed"],
+                y=speed_df["road_name"],
+                orientation="h",
+                text=speed_df["avg_speed_label"],
+                textposition="outside",
+                marker_color="#1f77b4",
+                customdata=speed_df[["observation_count"]].to_numpy(),
+                hovertemplate=(
+                    "Tuyến: %{y}<br>Tốc độ TB: %{x:.1f} km/h<br>"
+                    "Quan sát: %{customdata[0]}<extra></extra>"
+                ),
+            )
+        )
+        fig_speed.update_layout(
+            title="Tốc độ trung bình theo tuyến",
+            xaxis_title="Tốc độ trung bình (km/h)",
+            yaxis_title="",
+            yaxis={
+                "categoryorder": "array",
+                "categoryarray": speed_df["road_name"].tolist(),
+            },
+        )
+        style_dark(fig_speed)
+        st.plotly_chart(fig_speed, width="stretch")
+        try:
+            weather_chart_df = prepare_weather_chart_data(weather_df)
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
+        weather_cols = st.columns(2)
+        with weather_cols[0]:
+            fig_wspeed = go.Figure(
+                go.Bar(
+                    x=weather_chart_df["weather_condition"],
+                    y=weather_chart_df["avg_speed"],
+                    text=weather_chart_df["avg_speed_label"],
+                    textposition="outside",
+                    marker_color=["#1f77b4", "#17becf"][
+                        : len(weather_chart_df)
+                    ],
+                    customdata=weather_chart_df[["observation_count"]].to_numpy(),
+                    hovertemplate=(
+                        "Điều kiện: %{x}<br>Tốc độ TB: %{y:.1f} km/h<br>"
+                        "Quan sát: %{customdata[0]}<extra></extra>"
+                    ),
+                )
+            )
+            fig_wspeed.update_layout(
+                title="Tốc độ trung bình theo điều kiện thời tiết",
+                xaxis_title="",
+                yaxis_title="Tốc độ trung bình (km/h)",
+                xaxis={
+                    "categoryorder": "array",
+                    "categoryarray": weather_chart_df["weather_condition"].tolist(),
+                },
+            )
+            style_dark(fig_wspeed)
+            st.plotly_chart(fig_wspeed, width="stretch")
+        with weather_cols[1]:
+            fig_wcong = go.Figure(
+                go.Bar(
+                    x=weather_chart_df["weather_condition"],
+                    y=weather_chart_df["avg_congestion_percent"],
+                    text=weather_chart_df["avg_congestion_label"],
+                    textposition="outside",
+                    marker_color=["#1f77b4", "#17becf"][
+                        : len(weather_chart_df)
+                    ],
+                    customdata=weather_chart_df[["observation_count"]].to_numpy(),
+                    hovertemplate=(
+                        "Điều kiện: %{x}<br>Ùn tắc TB: %{y:.1f}%<br>"
+                        "Quan sát: %{customdata[0]}<extra></extra>"
+                    ),
+                )
+            )
+            fig_wcong.update_layout(
+                title="Mức ùn tắc trung bình theo điều kiện thời tiết",
+                xaxis_title="",
+                yaxis_title="Mức ùn tắc trung bình (%)",
+                xaxis={
+                    "categoryorder": "array",
+                    "categoryarray": weather_chart_df["weather_condition"].tolist(),
+                },
+            )
+            style_dark(fig_wcong)
+            st.plotly_chart(fig_wcong, width="stretch")
+        st.caption(
+            " • ".join(
+                f"{row['weather_condition']}: {int(row['observation_count'])} quan sát"
+                for _, row in weather_chart_df.iterrows()
+            )
+        )
 
 
 if __name__ == "__main__":
