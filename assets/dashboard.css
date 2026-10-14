@@ -1,5 +1,9 @@
-/* Production monitoring theme (dark).
-   Native Streamlit layout + controlled CSS only. No frameworks, no CDN. */
+/* Hanoi Traffic Analytics — Modern Dark Traffic Analytics Dashboard.
+   Native Streamlit layout + controlled CSS only. No frameworks, no CDN,
+   no glow/gradient excess. Palette:
+   bg #0B1020 / sidebar #101827 / card #151F32 / border #27344A /
+   text #F1F5F9 / muted #94A3B8 / primary #38BDF8 / secondary #818CF8.
+   Traffic: green #22C55E / yellow #EAB308 / orange #F97316 / red #EF4444. */
 
 html {
     scroll-behavior: smooth;
@@ -14,47 +18,46 @@ html {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: #2b3a55;
+    background: #27344A;
     border-radius: 8px;
-    border: 2px solid #0b1220;
+    border: 2px solid #0B1020;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: #3b507a;
+    background: #38BDF8;
 }
 * {
     scrollbar-width: thin;
-    scrollbar-color: #2b3a55 transparent;
+    scrollbar-color: #27344A transparent;
 }
 
 /* Surface level 0 — page background. */
 .stApp {
-    background-color: #0b1220;
-    color: #e6ebf2;
+    background-color: #0B1020;
+    color: #F1F5F9;
 }
 .block-container {
     /* Top padding must clear the fixed Streamlit header/toolbar.
-       1.2rem (~19px) < header height -> hero slid underneath it and the
-       title top was clipped. 4rem (~64px) = header + ~20px breathing,
-       dense but fully below the toolbar. No negative margins. */
+       4rem (~64px) = header + breathing room, dense but fully below
+       the toolbar. No negative margins, no clipping hacks. */
     padding-top: 4rem !important;
     padding-bottom: 3rem !important;
     max-width: 1400px;
 }
 
-/* Surface level 1 — sidebar control panel. */
+/* Surface level 1 — sidebar. */
 [data-testid="stSidebar"] {
-    background-color: #0e1628;
+    background-color: #101827;
 }
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] .stMarkdown {
-    color: #c9d4e6;
+    color: #F1F5F9;
 }
 
 h1, h2, h3 {
-    color: #f2f5fa !important;
+    color: #F1F5F9 !important;
 }
 .stCaption {
-    color: #93a1b8 !important;
+    color: #94A3B8 !important;
 }
 
 /* Hero header. Natural content flow (no fixed height) so text can never
@@ -62,26 +65,25 @@ h1, h2, h3 {
 .dash-title {
     font-size: 1.9rem;
     font-weight: 700;
-    color: #f2f5fa;
+    color: #F1F5F9;
     line-height: 1.25;
     overflow: visible;
 }
 .dash-subtitle {
-    color: #93a1b8;
+    color: #94A3B8;
     font-size: 0.95rem;
     line-height: 1.5;
     margin-top: 0.15rem;
-    /* Hero -> KPI breathing (~16px here + Streamlit block gap ~= 20-28px
-       total). Margin, not fixed height, so nothing can clip. */
+    /* Hero -> KPI breathing. Margin, not fixed height, so nothing clips. */
     margin-bottom: 1rem;
 }
 .header-meta {
     text-align: right;
-    color: #93a1b8;
+    color: #94A3B8;
     font-size: 0.82rem;
 }
 .header-meta b {
-    color: #e6ebf2;
+    color: #F1F5F9;
     font-size: 1.0rem;
 }
 .status-line {
@@ -92,28 +94,32 @@ h1, h2, h3 {
     margin-bottom: 0.15rem;
 }
 .status-dot {
-    color: #34d399;
+    color: #22C55E;
+}
+.status-dot-stale {
+    color: #EAB308;
 }
 
-/* Surface level 2 — KPI cards. */
+/* Surface level 2 — KPI cards (equal height via flex). */
 .kpi-card {
-    background: #141d31;
-    border: 1px solid #22304a;
-    border-radius: 16px;
+    background: #151F32;
+    border: 1px solid #27344A;
+    border-radius: 12px;
     padding: 0.9rem 1.1rem;
     margin-bottom: 0.5rem;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-    transition: transform 0.2s ease, border-color 0.2s ease,
-        box-shadow 0.2s ease, background-color 0.2s ease;
+    min-height: 112px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    transition: transform 0.2s ease, border-color 0.2s ease;
 }
 .kpi-card:hover {
     transform: translateY(-2px);
-    border-color: #33507e;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    border-color: #38BDF8;
 }
 .kpi-label {
     font-size: 0.72rem;
-    color: #93a1b8;
+    color: #94A3B8;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -122,8 +128,9 @@ h1, h2, h3 {
 .kpi-value {
     font-size: 1.55rem;
     font-weight: 700;
-    color: #ffffff;
+    color: #F1F5F9;
     line-height: 1.25;
+    overflow-wrap: break-word;
 }
 .kpi-icon {
     font-size: 1.1rem;
@@ -135,45 +142,37 @@ h1, h2, h3 {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    margin-top: 1.5rem;
-    margin-bottom: 0.6rem;
+    margin-top: 1rem;
+    margin-bottom: 0.4rem;
 }
 .section-header h2 {
     margin: 0;
     font-size: 1.22rem;
     font-weight: 650;
-    color: #f2f5fa;
+    color: #F1F5F9;
 }
 .section-icon {
     font-size: 1.2rem;
 }
-.section-caption {
-    color: #93a1b8;
-    font-size: 0.88rem;
-    margin-top: -0.25rem;
-    margin-bottom: 0.8rem;
-}
 
 /* Generic dark card (weather, insights). */
 .card {
-    background: #111a2c;
-    border: 1px solid #22304a;
-    border-radius: 14px;
+    background: #151F32;
+    border: 1px solid #27344A;
+    border-radius: 12px;
     padding: 0.9rem 1rem;
-    transition: transform 0.2s ease, border-color 0.2s ease,
-        box-shadow 0.2s ease;
+    transition: transform 0.2s ease, border-color 0.2s ease;
 }
 .card:hover {
     transform: translateY(-2px);
-    border-color: #33507e;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    border-color: #38BDF8;
 }
 
 /* Insight callout cards. */
 .insight-card {
-    background: #111a2c;
-    border: 1px solid #22304a;
-    border-left: 4px solid #38bdf8;
+    background: #151F32;
+    border: 1px solid #27344A;
+    border-left: 4px solid #38BDF8;
     border-radius: 8px;
     padding: 0.8rem 1rem;
     margin-bottom: 0.6rem;
@@ -181,14 +180,14 @@ h1, h2, h3 {
 .insight-title {
     font-size: 0.75rem;
     font-weight: 700;
-    color: #38bdf8;
+    color: #38BDF8;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     margin-bottom: 0.3rem;
 }
 .insight-content {
     font-size: 0.92rem;
-    color: #dbe4f0;
+    color: #F1F5F9;
     line-height: 1.5;
 }
 
@@ -199,19 +198,19 @@ h1, h2, h3 {
     gap: 0.5rem;
     padding: 0.3rem 0;
     font-size: 0.88rem;
-    color: #c9d4e6;
+    color: #F1F5F9;
 }
 .sidebar-metric-icon {
     font-size: 1.05rem;
 }
 .sidebar-divider {
-    border-top: 1px solid #22304a;
+    border-top: 1px solid #27344A;
     margin: 0.7rem 0;
 }
 .sidebar-section {
     font-size: 0.72rem;
     font-weight: 700;
-    color: #93a1b8;
+    color: #94A3B8;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     margin: 0.9rem 0 0.4rem 0;
@@ -222,37 +221,18 @@ h1, h2, h3 {
     gap: 0.45rem;
     font-size: 0.88rem;
     font-weight: 600;
-    color: #dbe4f0;
+    color: #F1F5F9;
     margin: 0.2rem 0 0.4rem 0;
 }
 
-/* Detail table spacing. */
-.detail-count {
-    font-size: 0.85rem;
-    color: #93a1b8;
-    margin-bottom: 0.5rem;
-}
-
-/* Chart containers. */
-.chart-container {
-    background: transparent;
-}
-
-/* Divider. */
-.hr-subtle {
-    border: none;
-    border-top: 1px solid #22304a;
-    margin: 1.2rem 0;
-}
-
-/* Map + legend. */
+/* Map + legend (dark). */
 .map-container {
     border-radius: 10px;
     overflow: hidden;
-    border: 1px solid #22304a;
+    border: 1px solid #27344A;
 }
 .legend-row {
-    color: #c9d4e6;
+    color: #F1F5F9;
     font-size: 0.88rem;
 }
 
@@ -260,41 +240,63 @@ h1, h2, h3 {
 .wx-value {
     font-size: 1.3rem;
     font-weight: 700;
-    color: #ffffff;
+    color: #F1F5F9;
 }
 .wx-label {
     font-size: 0.72rem;
-    color: #93a1b8;
+    color: #94A3B8;
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
 
 /* Widgets readability on dark. */
 [data-testid="stDataFrame"] {
-    border: 1px solid #22304a;
+    border: 1px solid #27344A;
     border-radius: 10px;
 }
 .stSelectbox label, .stMultiSelect label {
-    color: #c9d4e6 !important;
+    color: #F1F5F9 !important;
+}
+
+/* Tabs blend into the dark surface. */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 0.25rem;
+}
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    color: #94A3B8;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: #38BDF8 !important;
 }
 
 /* Secondary action button (manual update — not the primary path). */
 div[data-testid="stButton"] button[kind="secondary"] {
-    transition: transform 0.2s ease, border-color 0.2s ease,
-        box-shadow 0.2s ease, background-color 0.2s ease;
+    transition: transform 0.2s ease, border-color 0.2s ease;
 }
 div[data-testid="stButton"] button[kind="secondary"]:hover {
     transform: translateY(-2px);
-    border-color: #33507e;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    border-color: #38BDF8;
 }
 
 /* Expanders blend into the dark surface. */
 div[data-testid="stExpander"] {
-    border: 1px solid #22304a;
+    border: 1px solid #27344A;
     border-radius: 12px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s ease;
 }
 div[data-testid="stExpander"]:hover {
-    border-color: #33507e;
+    border-color: #38BDF8;
+}
+
+/* Small screens: keep KPI value readable, avoid horizontal overflow. */
+@media (max-width: 768px) {
+    .kpi-value {
+        font-size: 1.25rem;
+    }
+    .dash-title {
+        font-size: 1.5rem;
+    }
+    .header-meta, .status-line {
+        text-align: left;
+    }
 }
