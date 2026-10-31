@@ -1,0 +1,37 @@
+services:
+  dashboard:
+    build: .
+    container_name: hanoi-traffic-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      # data/ chua roads.csv, raw CSV, data/processed va data/lake.
+      - ./data:/app/data
+      # roads.csv thuc te nam trong data/ (config.py: ROADS_CSV = data/roads.csv).
+      - ./data/roads.csv:/app/roads.csv
+    # Dashboard cung can .env de nut "Cap nhat du lieu" hoat dong nhu khi chay local.
+    env_file:
+      - path: .env
+        required: false
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  collector:
+    build: .
+    container_name: hanoi-traffic-collector
+    volumes:
+      - ./data:/app/data
+      - ./data/roads.csv:/app/roads.csv
+    # Chi nap .env neu file ton tai (Docker Compose >= 2.24).
+    env_file:
+      - path: .env
+        required: false
+    command: ["python", "historical_collector.py", "--max-cycles", "100"]
+    depends_on:
+      dashboard:
+        condition: service_healthy

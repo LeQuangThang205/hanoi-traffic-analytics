@@ -1,0 +1,3 @@
+weather_condition,observation_count,avg_speed,avg_free_flow_speed,avg_congestion_percent,max_congestion_percent,min_congestion_percent
+Không mưa,4684,23.36400512382579,36.210930828351835,35.731910053477336,67.64705882352942,0.0
+Mưa,528,23.15530303030303,36.08901515151515,36.21511664291088,62.5,12.727272727272732

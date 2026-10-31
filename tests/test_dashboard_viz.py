@@ -150,6 +150,68 @@ def t_filter_roads_dates():
         pass
 
 
+def t_active_road_filter():
+    df, _, _ = _fixture()
+    road = _road_summary()
+    combined, roads = app.filter_frames_to_active_roads(df, road, ["Nguyen Trai"])
+    assert set(combined["road_name"]) == {"Nguyen Trai"}
+    assert set(roads["road_name"]) == {"Nguyen Trai"}
+    assert len(combined) == 3
+    # Khop ten bo dau / tien to "Pho" / hoa-thuong / khoang trang
+    combined2, _ = app.filter_frames_to_active_roads(
+        df, road, ["  phố   nguyễn   trãi "])
+    assert len(combined2) == 3
+    # active_roads rong -> khong loc (khong tu an toan bo dashboard)
+    combined3, roads3 = app.filter_frames_to_active_roads(df, road, [])
+    assert len(combined3) == len(df) and len(roads3) == len(road)
+    # Khong mutate input
+    assert len(df) == 6 and len(road) == 2
+
+
+def t_active_roads_from_roads_csv():
+    import csv as _csv
+
+    names = app.active_road_names_from_csv()
+    assert names and all(isinstance(n, str) and n == n.strip() for n in names)
+    with open(app.ROADS_CSV, newline="", encoding="utf-8") as fh:
+        expected = [r["road_name"].strip() for r in _csv.DictReader(fh)]
+    # Doc dung config.ROADS_CSV, giu thu tu file (read-only, khong ghi)
+    assert names == expected
+
+
+def t_metrics_scoped_no_false_warning():
+    df, _, hanoi = _fixture()
+    combined, road = app.filter_frames_to_active_roads(
+        df, _road_summary(), ["Nguyen Trai"])
+    hourly = pd.DataFrame([
+        dict(local_hour=8, time_window="08:00-09:00", observation_count=6)])
+    weather = pd.DataFrame([
+        dict(weather_condition="Không mưa", observation_count=6)])
+    scoped = app.calculate_overview_metrics(
+        combined, road, hourly, weather, hanoi.loc[combined.index],
+        road_scope_filtered=True)
+    assert scoped["n_obs"] == 3 and scoped["n_roads"] == 1
+    assert scoped["warnings"] == []
+    # Khong scope: giu nguyen reconciliation cu (hourly/weather lech tong)
+    unscoped = app.calculate_overview_metrics(
+        combined, road, hourly, weather, hanoi.loc[combined.index])
+    assert len(unscoped["warnings"]) == 2
+
+
+def t_plotly_dark_style():
+    import plotly.graph_objects as go
+
+    fig = go.Figure(go.Scatter(x=[1, 2], y=[1, 2], name="a"))
+    out = app.style_dark(fig, hovermode="x unified")
+    assert out is fig
+    assert fig.layout.paper_bgcolor == "rgba(0,0,0,0)"
+    assert fig.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert fig.layout.hovermode == "x unified"
+    assert tuple(fig.layout.colorway) == tuple(app.PLOTLY_COLORWAY)
+    assert fig.layout.xaxis.gridcolor == app.PLOTLY_GRID_COLOR
+    assert fig.layout.yaxis.gridcolor == app.PLOTLY_GRID_COLOR
+
+
 def t_hourly_speed_gaps():
     df, _, hanoi = _fixture()
     work = app.filter_combined_by_roads_dates(
@@ -295,6 +357,10 @@ def main():
     check("mau-nguong-u-tac", t_congestion_hex_thresholds)
     check("trang-thai-du-lieu", t_data_status)
     check("loc-tuyen-ngay", t_filter_roads_dates)
+    check("loc-tuyen-dang-theo-doi", t_active_road_filter)
+    check("doc-roads-csv-readonly", t_active_roads_from_roads_csv)
+    check("kpi-scope-khong-warning-sai", t_metrics_scoped_no_false_warning)
+    check("plotly-dark-style", t_plotly_dark_style)
     check("toc-do-theo-gio-khong-noi-suy", t_hourly_speed_gaps)
     check("un-tac-tuyen-sap-xep-tv", t_road_congestion_sorted_vn)
     check("heatmap-o-trong-khong-0", t_heatmap_blank_not_zero)

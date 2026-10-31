@@ -16,6 +16,11 @@ Bootstrap khi chua co pointer: dung legacy coherent snapshot neu validate
 duoc. Auto-refresh CHI doc + render, TUYET DOI KHONG goi collector/API/Spark
 (pipeline chi chay tu historical_collector --continuous hoac nut manual khi
 user click).
+
+Chi hien thi cac tuyen dang theo doi trong data/roads.csv: loc o
+presentation layer (KPI/map/chart/filter/bang) ngay sau khi doc snapshot.
+Snapshot processed van giu nguyen du lieu lich su cua tuyen da xoa (khong
+cascade delete, khong sua file).
 """
 
 from pathlib import Path
@@ -27,7 +32,7 @@ import streamlit as st
 from branca.element import MacroElement, Template
 from streamlit_folium import st_folium
 
-from config import HANOI_ROAD_CATALOG, find_catalog_entry
+from config import HANOI_ROAD_CATALOG, ROADS_CSV, find_catalog_entry
 from utils import road_manager
 from utils import geocoding as geocoding_service
 
@@ -177,6 +182,13 @@ ROAD_TRACE_COLORS = [
     "#38BDF8", "#818CF8", "#22C55E", "#EAB308",
     "#F97316", "#EF4444", "#E879F9",
 ]
+
+# Plotly presentation palette: tuong phan cao tren nen toi, dung chung cho
+# colorway + trace tuyen duong. Khong doi mau trang thai nghiep vu o tren.
+PLOTLY_COLORWAY = list(ROAD_TRACE_COLORS)
+PLOTLY_GRID_COLOR = "rgba(255, 255, 255, 0.10)"
+PLOTLY_ZERO_LINE_COLOR = "rgba(255, 255, 255, 0.16)"
+PLOTLY_HOVER_BG = "#0F172A"
 
 
 def display_road_name(raw):
@@ -342,12 +354,17 @@ def _require_numeric(series, column):
     return parsed
 
 
-def calculate_overview_metrics(combined_df, road_df, hourly_df, weather_df, event_hanoi):
+def calculate_overview_metrics(combined_df, road_df, hourly_df, weather_df, event_hanoi,
+                               road_scope_filtered=False):
     """Tinh 6 KPI tong quan tu processed snapshots (pure, testable).
 
     Chi tong hop presentation-level don gian (len/nunique/mean/sum);
     KHONG recreate Spark analytics. Tra ve dict so lieu tho + warnings
     reconciliation (UI tu format/hien thi). Malformed -> ValueError.
+
+    road_scope_filtered=True khi frames da duoc loc ve tuyen dang theo doi:
+    hourly/weather summaries la aggregate toan snapshot (khong co road_name)
+    nen khong so khop tong voi combined da loc (tranh warning sai).
     """
     speed = _require_numeric(combined_df["current_speed"], "current_speed")
     congestion = _require_numeric(combined_df["congestion_percent"], "congestion_percent")
@@ -369,12 +386,15 @@ def calculate_overview_metrics(combined_df, road_df, hourly_df, weather_df, even
             f"số tuyến quan sát được ({n_roads})."
         )
     for label, df in (("road_summary", road_df), ("hourly_summary", hourly_df)):
+        if label == "hourly_summary" and road_scope_filtered:
+            continue
         if not df.empty and int(df["observation_count"].sum()) != n_obs:
             warnings.append(
                 f"Tổng observation_count trong {label} "
                 f"({int(df['observation_count'].sum())}) khác số quan trắc ({n_obs})."
             )
-    if not weather_df.empty and int(weather_df["observation_count"].sum()) != n_matched:
+    if (not road_scope_filtered and not weather_df.empty
+            and int(weather_df["observation_count"].sum()) != n_matched):
         warnings.append(
             f"Tổng observation_count trong weather_summary "
             f"({int(weather_df['observation_count'].sum())}) khác "
@@ -465,6 +485,42 @@ def load_dashboard_data(combined=None, road=None, hourly=None, weather=None):
         str(weather or WEATHER_SUMMARY_CSV),
     )
     return _load_snapshots_cached(snapshot_signature(*paths), paths)
+
+
+def active_road_names_from_csv(roads_path=None):
+    """Danh sach tuyen dang theo doi tu roads.csv (read-only).
+
+    Doc truc tiep config.ROADS_CSV qua road_manager (source of truth cua
+    MVP), KHONG doc processed snapshot, KHONG goi API/Spark, KHONG ghi file.
+    Tra ve list ten da strip theo dung thu tu trong file.
+    """
+    path = Path(roads_path) if roads_path is not None else ROADS_CSV
+    roads = road_manager.load_roads(path)
+    return [str(r["road_name"]).strip() for r in roads if str(r["road_name"]).strip()]
+
+
+def filter_frames_to_active_roads(combined_df, road_df, active_roads):
+    """Loc combined + road_summary ve tuyen dang theo doi (pure, copy moi).
+
+    Snapshot processed van chua du lieu lich su cua tuyen da xoa khoi
+    roads.csv (khong cascade delete), nen loc o presentation layer truoc khi
+    tinh KPI/ve map/chart/bang. So khop ten bang canonical_road_key (bo dau,
+    bo tien to duong/pho, khong phan biet hoa/thuong/khoang trang) de tuong
+    thich ten giua roads.csv va processed snapshot.
+
+    active_roads rong -> giu nguyen du lieu (khong tu an toan bo dashboard).
+    Khong mutate input, khong ghi CSV.
+    """
+    active_keys = {canonical_road_key(name) for name in (active_roads or [])}
+    active_keys.discard("")
+    if not active_keys:
+        return combined_df.copy(), road_df.copy()
+
+    def _keep(frame):
+        keys = frame["road_name"].astype(str).map(canonical_road_key)
+        return frame.loc[keys.isin(active_keys)].copy()
+
+    return _keep(combined_df), _keep(road_df)
 
 
 DASHBOARD_PREV_SNAPSHOT_KEY = "dashboard_prev_snapshot"
@@ -811,20 +867,62 @@ def prepare_detail_table(filtered_df, event_hanoi):
     return pd.DataFrame(rows, columns=DETAIL_TABLE_COLUMNS)
 
 
-def style_dark(fig):
-    """Ap dark navy styling cho 1 Plotly figure (pure layout, khong doi data).
+def style_dark(fig, hovermode="closest"):
+    """Ap dark styling + grid mo + hover sach cho 1 Plotly figure (pure).
 
-    Dung template plotly_dark + nen trong suot de hop card dashboard.
+    - paper/plot background trong suot de bieu do tiep vao card Streamlit.
+    - Grid ngang/doc mo (rgba white 0.10), zero line nhe, tick mau muted.
+    - colorway hien dai, tuong phan cao tren nen toi.
+    - hovermode: "x unified" cho chart nhieu series cung truc x (theo gio/
+      thoi gian); "closest" cho bar/heatmap/scatter (tranh tooltip sai).
+    Khong doi data, khong doi nguong/mau trang thai nghiep vu.
     Tra ve chinh fig (cho phep chain).
     """
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font={"color": "#e6ebf2"},
-        margin={"l": 8, "r": 8, "t": 48, "b": 8},
+        font={"color": "#E6EBF2", "family": "Inter, 'Segoe UI', sans-serif"},
+        colorway=list(PLOTLY_COLORWAY),
+        margin={"l": 10, "r": 10, "t": 54, "b": 10},
+        hovermode=hovermode,
+        hoverlabel={
+            "bgcolor": PLOTLY_HOVER_BG,
+            "bordercolor": "#27344A",
+            "font": {"color": "#F1F5F9", "size": 12},
+        },
+        legend={
+            "bgcolor": "rgba(0,0,0,0)",
+            "font": {"color": "#CBD5E1", "size": 11},
+        },
+        title={"font": {"size": 15, "color": "#F1F5F9"}, "x": 0.01, "xanchor": "left"},
     )
+    axis_style = {
+        "gridcolor": PLOTLY_GRID_COLOR,
+        "gridwidth": 1,
+        "zerolinecolor": PLOTLY_ZERO_LINE_COLOR,
+        "linecolor": "rgba(255, 255, 255, 0.08)",
+        "tickfont": {"color": "#94A3B8", "size": 11},
+        "title": {"font": {"color": "#94A3B8", "size": 12}},
+    }
+    fig.update_xaxes(**axis_style)
+    fig.update_yaxes(**axis_style)
     return fig
+
+
+def render_kpi_card(icon, label, value):
+    """Render 1 the KPI bang HTML (presentation only, khong tinh toan).
+
+    CSS `.kpi-card` nam trong assets/dashboard.css. `value` da duoc format
+    tu metrics (so lieu noi bo, khong phai input nguoi dung).
+    """
+    st.markdown(
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label"><span class="kpi-icon">{icon}</span>{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 LATEST_TABLE_COLUMNS = [
@@ -1869,6 +1967,34 @@ def main():
         st.error("Chưa có dữ liệu hiển thị. Vui lòng thử lại sau ít phút.")
         st.stop()
     combined_df, road_df, hourly_df, weather_df = snapshot["frames"]
+
+    # ---- Chi hien thi tuyen dang theo doi (data/roads.csv) ----
+    # roads.csv la source of truth; snapshot processed van chua lich su cua
+    # tuyen da xoa (khong cascade delete) nen loc tai presentation layer
+    # truoc khi tinh KPI/ve map/chart/filter/bang. Khong sua file processed,
+    # khong chay lai Spark (hourly/weather summaries la aggregate toan
+    # snapshot, khong co road_name de loc).
+    active_roads = []
+    try:
+        active_roads = active_road_names_from_csv()
+    except road_manager.RoadManagerError as exc:
+        # Sidebar se hien loi doc roads.csv; dashboard van render snapshot
+        # day du de khong chan nguoi dung (khong am tham an du lieu).
+        print(f"[dashboard] active-road filter skipped: "
+              f"{type(exc).__name__}: {exc}")
+    if active_roads:
+        combined_df, road_df = filter_frames_to_active_roads(
+            combined_df, road_df, active_roads
+        )
+        print(f"[dashboard] road scope: {len(active_roads)} tuyen dang theo doi, "
+              f"{len(combined_df)} quan sat hien thi.")
+        if combined_df.empty:
+            st.error(
+                "Chưa có dữ liệu quan sát cho các tuyến đang theo dõi trong "
+                "data/roads.csv. Hãy chạy `python data_update.py --process-only` "
+                "(hoặc chờ chu kỳ thu thập tiếp theo) rồi mở lại dashboard."
+            )
+            st.stop()
     if snapshot.get("syncing"):
         st.caption("Đang đồng bộ dữ liệu mới...")
 
@@ -1912,7 +2038,8 @@ def main():
     # Reconciliation diagnostics chi ra terminal, KHONG warning banner len UI.
     try:
         metrics = calculate_overview_metrics(
-            combined_df, road_df, hourly_df, weather_df, event_hanoi
+            combined_df, road_df, hourly_df, weather_df, event_hanoi,
+            road_scope_filtered=bool(active_roads),
         )
     except ValueError as exc:
         print(f"[dashboard] snapshot diagnostic: metrics failed: {exc}")
@@ -1962,16 +2089,7 @@ def main():
     kpi_cols = st.columns(4)
     for i, (icon, label, value) in enumerate(kpi_cards):
         with kpi_cols[i]:
-            display_value = value if metrics['n_obs'] else "—"
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label"><span class="kpi-icon">{icon}</span>{label}</div>
-                    <div class="kpi-value">{display_value}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            render_kpi_card(icon, label, value if metrics["n_obs"] else "—")
 
     # ---- Du lieu dung chung: quan sat moi nhat moi tuyen ----
     latest_df = get_latest_road_observations(combined_df, event_utc)
@@ -2060,10 +2178,6 @@ def main():
                 for road in sorted(chart_df["road_name"].astype(str).unique().tolist()):
                     sub = chart_df[chart_df["road_name"].astype(str) == road]
                     sub_hourly = prepare_hourly_speed_filtered(sub)
-                    color = ROAD_TRACE_COLORS[
-                        sorted(chart_df["road_name"].astype(str).unique().tolist()).index(road)
-                        % len(ROAD_TRACE_COLORS)
-                    ]
                     fig_hspeed.add_trace(go.Scatter(
                         x=sub_hourly["local_hour"],
                         y=sub_hourly["avg_speed"],
@@ -2073,8 +2187,7 @@ def main():
                         connectgaps=False,
                         customdata=sub_hourly[["n_obs"]].to_numpy(),
                         hovertemplate=(
-                            f"Tuyến: {display_road_name(road)}<br>"
-                            "Giờ: %{x}h<br>Tốc độ trung bình: %{y:.1f} km/h<br>"
+                            "Tốc độ trung bình: %{y:.1f} km/h<br>"
                             "Số quan sát: %{customdata[0]}<extra></extra>"
                         ),
                     ))
@@ -2085,10 +2198,10 @@ def main():
                     title="Tốc độ trung bình theo giờ",
                     xaxis_title="Giờ trong ngày",
                     yaxis_title="Tốc độ trung bình (km/h)",
-                    xaxis={"dtick": 1},
+                    xaxis={"dtick": 1, "hoverformat": "0"},
                     legend={"title": "Tuyến đường"},
                 )
-                style_dark(fig_hspeed)
+                style_dark(fig_hspeed, hovermode="x unified")
                 st.plotly_chart(fig_hspeed, width="stretch")
                 if missing_hours:
                     st.caption(
@@ -2156,8 +2269,15 @@ def main():
                     [0.0, "#22C55E"], [0.4, "#EAB308"],
                     [0.7, "#F97316"], [1.0, "#EF4444"],
                 ],
-                colorbar={"title": "Ùn tắc (%)"},
+                colorbar={
+                    "title": {"text": "Ùn tắc (%)",
+                              "font": {"color": "#94A3B8", "size": 12}},
+                    "outlinewidth": 0,
+                    "tickfont": {"color": "#94A3B8", "size": 11},
+                },
                 hoverongaps=False,
+                xgap=2,
+                ygap=2,
             ))
             fig_heat.update_layout(
                 title="Ùn tắc theo tuyến và giờ",
@@ -2187,8 +2307,6 @@ def main():
                     name=display_road_name(road),
                     line={"color": ROAD_TRACE_COLORS[idx % len(ROAD_TRACE_COLORS)]},
                     hovertemplate=(
-                        f"Tuyến: {display_road_name(road)}<br>"
-                        "Thời gian: %{x|%d/%m/%Y %H:%M}<br>"
                         "Mức ùn tắc: %{y:.1f}%<extra></extra>"
                     ),
                 ))
@@ -2196,9 +2314,10 @@ def main():
                 title="Xu hướng ùn tắc theo thời gian",
                 xaxis_title="Thời gian quan sát",
                 yaxis_title="Mức ùn tắc (%)",
+                xaxis={"hoverformat": "%d/%m/%Y %H:%M"},
                 legend={"title": "Tuyến đường"},
             )
-            style_dark(fig_trend)
+            style_dark(fig_trend, hovermode="x unified")
             st.plotly_chart(fig_trend, width="stretch")
             if trend_skipped:
                 st.caption(
@@ -2225,7 +2344,6 @@ def main():
                         marker_color=STATUS_COLORS_HEX[level],
                         customdata=dist[["n_obs"]].to_numpy(),
                         hovertemplate=(
-                            "Tuyến: %{x}<br>Trạng thái: " + level + "<br>"
                             "Tỷ lệ: %{y:.1f}%<br>"
                             "Tổng quan sát tuyến: %{customdata[0]}<extra></extra>"
                         ),
@@ -2237,7 +2355,7 @@ def main():
                     barmode="stack",
                     legend={"title": "Trạng thái"},
                 )
-                style_dark(fig_dist)
+                style_dark(fig_dist, hovermode="x unified")
                 st.plotly_chart(fig_dist, width="stretch")
             except ValueError as exc:
                 _chart_error("Biểu đồ phân bố trạng thái chưa vẽ được", exc)
@@ -2500,6 +2618,12 @@ def main():
 
     with st.expander("Thông tin phương pháp và giới hạn dữ liệu", expanded=False):
         st.markdown(
+            "- Dashboard chỉ hiển thị các tuyến đang theo dõi trong "
+            "`data/roads.csv`; dữ liệu lịch sử của tuyến đã xóa vẫn được giữ "
+            "trong kho dữ liệu nhưng không xuất hiện ở KPI/bản đồ/biểu đồ/bộ lọc.\n"
+            "- Riêng số liệu tổng hợp theo giờ và theo thời tiết là kết quả "
+            "Spark trên toàn bộ dữ liệu đã thu thập (không tách lại được theo "
+            "tuyến sau khi tổng hợp).\n"
             "- KPI tính trên toàn bộ quan sát trong dữ liệu hiện tại; "
             "bản đồ và bảng “Giao thông mới nhất” dùng quan sát mới nhất của từng tuyến.\n"
             "- Bộ lọc tuyến/ngày áp dụng cho các biểu đồ; bộ lọc trạng thái "

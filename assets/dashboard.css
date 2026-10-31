@@ -100,22 +100,28 @@ h1, h2, h3 {
     color: #EAB308;
 }
 
-/* Surface level 2 — KPI cards (equal height via flex). */
+/* Surface level 2 — KPI cards (equal height via flex).
+   Nền trắng mờ 5% tạo cảm giác khối nổi trên nền tối; viền + shadow nhẹ. */
 .kpi-card {
-    background: #151F32;
-    border: 1px solid #27344A;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 12px;
-    padding: 0.9rem 1.1rem;
+    padding: 1rem 1.15rem;
     margin-bottom: 0.5rem;
     min-height: 112px;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    transition: transform 0.2s ease, border-color 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    transition: transform 0.2s ease, border-color 0.2s ease,
+                box-shadow 0.2s ease, background 0.2s ease;
 }
 .kpi-card:hover {
     transform: translateY(-2px);
-    border-color: #38BDF8;
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(56, 189, 248, 0.55);
+    box-shadow: 0 8px 22px rgba(2, 6, 23, 0.45);
 }
 .kpi-label {
     font-size: 0.72rem;
@@ -135,6 +141,22 @@ h1, h2, h3 {
 .kpi-icon {
     font-size: 1.1rem;
     margin-right: 0.4rem;
+    color: #38BDF8;
+}
+
+/* Plotly chart surfaces — card-like, hoà vào dark theme.
+   Nền trong suốt của figure (paper/plot bgcolor) để lộ nền card này. */
+[data-testid="stPlotlyChart"] {
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    padding: 0.35rem 0.45rem 0.15rem;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+[data-testid="stPlotlyChart"]:hover {
+    border-color: rgba(56, 189, 248, 0.35);
+    background: rgba(255, 255, 255, 0.04);
 }
 
 /* Section headings. */
@@ -230,6 +252,17 @@ h1, h2, h3 {
     border-radius: 10px;
     overflow: hidden;
     border: 1px solid #27344A;
+}
+/* Folium map = streamlit-folium custom component iframe. Ép 100% width,
+   bo góc + viền + khoảng trắng để bản đồ đọc như một card. */
+iframe[data-testid="stCustomComponentV1"] {
+    display: block;
+    width: 100%;
+    background: #0F172A;
+    border: 1px solid #27344A;
+    border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(2, 6, 23, 0.35);
+    margin: 0.25rem 0 0.75rem;
 }
 .legend-row {
     color: #F1F5F9;

@@ -1,0 +1,42 @@
+# Hanoi Traffic Analytics — Streamlit dark theme.
+# Đồng bộ với palette trong assets/dashboard.css (bg #0B1020, card #151F32,
+# border #27344A, text #F1F5F9, accent #38BDF8). Không dùng font/CDN ngoài
+# để dashboard vẫn chạy offline khi demo bằng backup dataset.
+
+[theme]
+base = "dark"
+primaryColor = "#0284C7"
+backgroundColor = "#0B1020"
+secondaryBackgroundColor = "#151F32"
+textColor = "#F1F5F9"
+linkColor = "#38BDF8"
+codeTextColor = "#E6EBF2"
+codeBackgroundColor = "#101827"
+borderColor = "#27344A"
+dataframeBorderColor = "#27344A"
+dataframeHeaderBackgroundColor = "#101827"
+baseRadius = "12px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+font = "sans-serif"
+headingFont = "sans-serif"
+
+# Categorical palette: trùng ROAD_TRACE_COLORS trong app.py.
+chartCategoricalColors = [
+    "#38BDF8", "#818CF8", "#22C55E", "#EAB308",
+    "#F97316", "#EF4444", "#E879F9", "#2DD4BF",
+]
+
+# Sequential palette cho heatmap/scale (đúng 10 màu theo yêu cầu Streamlit).
+chartSequentialColors = [
+    "#0B1020", "#0F2A44", "#12405F", "#155E7A", "#1B7F96",
+    "#22A3B0", "#2DC7C0", "#6EE7D7", "#B7F5EA", "#ECFDF5",
+]
+
+[theme.sidebar]
+backgroundColor = "#101827"
+secondaryBackgroundColor = "#151F32"
+textColor = "#F1F5F9"
+borderColor = "#27344A"
+primaryColor = "#0284C7"

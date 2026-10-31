@@ -134,6 +134,8 @@ hanoi-traffic-analytics/
 
 Không được thêm các công nghệ trên nếu chưa được người dùng chấp thuận bằng văn bản rõ ràng.
 
+> **Ghi chú Phase 10:** Docker Desktop (WSL2 backend) được bổ sung như môi trường đóng gói runtime cho demo Phase 10 (`Dockerfile`, `docker-compose.yml`, `run-docker.ps1`). Đây là packaging cho demo, không thay đổi kiến trúc dữ liệu CSV, batch PySpark hay phạm vi MVP; các mục cấm còn lại vẫn giữ nguyên.
+
 ---
 
 ## 4. Phạm vi MVP
@@ -523,6 +525,14 @@ Tiến độ:
   - Nguyên nhân không dấu: `roads.csv` + catalog lưu `road_name` ASCII; map hiển thị cũ chỉ 7 tuyến. Giữ khóa nội bộ ASCII cho tuyến hiện có (tương thích raw/processed/Spark join/snapshot); mở rộng map hiển thị đủ 12 tuyến (Láng Hạ, Nguyễn Chí Thanh, Trần Duy Hưng, Lê Văn Lương, Phạm Hùng...). Tuyến mới lưu tên có dấu do Nominatim cung cấp (chưa có lịch sử nên không xung đột khóa); không đổi hàng loạt tên lịch sử.
   - Geocoding Nominatim công khai (không key): chỉ gọi khi nhấn "Tìm tuyến đường" (không autocomplete), User-Agent định danh, rate-limit client 1.1s/call, cache process 100 query (key bỏ dấu), timeout 10s, viewbox+bouned Hà Nội + lọc client (address Hà Nội/bbox, class=highway, tọa độ hợp lệ làm tròn 4 decimals). Kết quả trùng tên hiện radio kèm địa chỉ để chọn; trùng gần đúng (bỏ dấu/tiền tố) bị từ chối thân thiện.
   - Thêm tuyến: qua `road_manager.add_road` (validation/duplicate/atomic giữ nguyên), không gọi TomTom ngay; `collector.load_roads()` đọc tươi `roads.csv` mỗi cycle nên nhận tuyến mới ở chu kỳ tiếp theo (đã kiểm chứng trên CSV tạm). UI dark tiếng Việt: giữ thêm nhanh catalog + form tìm kiếm, spinner, thông báo tìm thấy/không thấy/lỗi, xác nhận thành công; giữ xóa tuyến; ghi rõ theo dõi tọa độ đại diện.
+- [x] **Dashboard chỉ hiển thị tuyến đang theo dõi (`data/roads.csv`): COMPLETE** (helper 20/20 checks PASS + AppTest read-only PASS, 0 TomTom, 0 Open-Meteo, 0 real Spark; chỉ sửa `app.py` + `tests/test_dashboard_viz.py`; không đổi UI structure/schema/snapshot/raw; Phase 10 vẫn IN PROGRESS).
+  - `active_road_names_from_csv()` đọc trực tiếp `config.ROADS_CSV` qua `road_manager.load_roads()` (source of truth); `filter_frames_to_active_roads()` lọc combined + road_summary ở presentation layer bằng `canonical_road_key` (bỏ dấu/tiền tố đường-phố, không phân biệt hoa/thường/khoảng trắng) nên tuyến đã xóa (Cầu Giấy) không còn trong KPI/map/chart/filter/bảng.
+  - Snapshot processed + raw giữ nguyên (không cascade delete, không ghi file); hourly/weather summaries là aggregate toàn snapshot (không có `road_name`) nên vẫn dùng cho insight tổng hợp, đã ghi rõ trong expander giới hạn; `calculate_overview_metrics(..., road_scope_filtered=)` bỏ reconciliation sai khi đã scope.
+  - Verification read-only tại thời điểm sửa: active 10 tuyến / snapshot 11 tuyến → dashboard hiển thị 10 tuyến, loại toàn bộ quan sát Cầu Giấy; AppTest 0 exception, cả 2 filter tuyến đều không còn Cầu Giấy.
+- [x] **README Phase 10 — Sẵn sàng Demo (Docker quick start + Offline Demo): COMPLETE** (documentation only; 0 TomTom, 0 Open-Meteo, 0 Spark; không đổi code/dữ liệu; Phase 10 vẫn IN PROGRESS, `CURRENT_PHASE = 10`).
+  - `README.md` viết lại theo Phase 10: tổng quan, kiến trúc CSV/versioned snapshot, cấu trúc thư mục, yêu cầu Docker Desktop + WSL2, hai chế độ `run-docker.ps1` (Full System / Offline Demo), cảnh báo quota API, dừng/log/troubleshooting, phạm vi và giới hạn.
+  - README nêu rõ dashboard đọc snapshot CSV và không gọi API khi render; Offline Demo dùng snapshot có sẵn (>3.600 quan sát), khuyên dùng khi báo cáo; không mô tả ML/streaming như tính năng.
+  - `data/raw/` được ghi là lớp logic; repo hiện lưu raw trực tiếp tại `data/traffic_data.csv` + `data/weather_data.csv`. `data/demo_backup/` được ghi là vị trí backup dành cho demo offline; nguồn đọc chính vẫn là `data/processed/`.
 
 ---
 
@@ -576,6 +586,7 @@ Tiến độ:
 - Phase 9 closeout PASS: orchestrator + controlled collection/recovery + shadowing fix + one-click UI + user browser E2E (2 updates: traffic 21 → 33, weather 16 → 28, combined 33, hourly 3 rows; roads 6 giữ nguyên); chuyển CURRENT_PHASE = 10 (phase cuối, không có Phase 11).
 - Coherent snapshot publishing: dashboard chỉ nhận snapshot mới khi `data/processed/snapshot_ready.json` (publish atomic cuối pipeline) đổi version; transient mixed-version giữ last-known-good, diagnostics ra terminal, không warning backend lên normal UI. Dashboard UX theo phong cách production monitoring (single hero, control-panel sidebar, KPI hover, smooth scroll), cadence near-realtime giữ nguyên.
 - Versioned processed snapshot architecture (fix overwrite bug): dashboard authoritative read path là `data/processed/current_snapshot.json` → `data/processed/snapshots/<version>/` (4 CSV cùng version, validate vs pointer); atomic pointer publication guarantees old coherent snapshot remains available while new Spark batch is processing. Legacy `data/processed/*.csv` + `snapshot_ready.json` retained only for bootstrap/compatibility (not authoritative). Phase 10 remains IN PROGRESS.
+- Phase 10 demo runtime packaging: Docker Desktop (WSL2 backend) đóng gói Python + OpenJDK + PySpark/Streamlit và cung cấp hai chế độ qua `run-docker.ps1` (Full System: dashboard + collector; Offline Demo: chỉ dashboard, không gọi API). Đây là bổ sung packaging cho demo Phase 10, không thay đổi kiến trúc CSV, batch PySpark hay phạm vi MVP.
 
 ---
 

@@ -1,14 +1,14 @@
 {
-  "version": "2026-10-12T13:16:05.374397+00:00",
-  "published_at": "2026-10-12T13:16:05.374397+00:00",
-  "combined_rows": 3181,
+  "version": "2026-10-31T01:05:58.562322+00:00",
+  "published_at": "2026-10-31T01:05:58.562322+00:00",
+  "combined_rows": 5212,
   "road_summary_rows": 11,
-  "road_observation_sum": 3181,
-  "hourly_summary_rows": 16,
-  "hourly_observation_sum": 3181,
+  "road_observation_sum": 5212,
+  "hourly_summary_rows": 17,
+  "hourly_observation_sum": 5212,
   "weather_summary_rows": 2,
-  "weather_observation_sum": 3181,
-  "parquet_rows": 3181,
-  "traffic_input_rows": 3181,
-  "weather_input_rows": 1171
+  "weather_observation_sum": 5212,
+  "parquet_rows": 5212,
+  "traffic_input_rows": 5212,
+  "weather_input_rows": 1919
 }
