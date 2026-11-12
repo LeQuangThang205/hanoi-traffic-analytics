@@ -97,7 +97,8 @@ def load_traffic_data(spark, path=None):
     target = str(path) if path is not None else str(TRAFFIC_DATA_CSV)
     if not target or target == "None":
         raise RuntimeError("Khong xac dinh duoc duong dan traffic_data.csv.")
-    return spark.read.option("header", True).schema(TRAFFIC_SCHEMA).csv(target)
+    # THÊM .dropDuplicates() VÀO CUỐI DÒNG NÀY:
+    return spark.read.option("header", True).schema(TRAFFIC_SCHEMA).csv(target).dropDuplicates()
 
 
 def load_weather_data(spark, path=None):
@@ -105,7 +106,8 @@ def load_weather_data(spark, path=None):
     target = str(path) if path is not None else str(WEATHER_DATA_CSV)
     if not target or target == "None":
         raise RuntimeError("Khong xac dinh duoc duong dan weather_data.csv.")
-    return spark.read.option("header", True).schema(WEATHER_SCHEMA).csv(target)
+    # THÊM .dropDuplicates() VÀO CUỐI DÒNG NÀY:
+    return spark.read.option("header", True).schema(WEATHER_SCHEMA).csv(target).dropDuplicates()
 
 
 # Raw traffic timestamp contract (evidence: toan bo raw hien tai dung 1 format

@@ -15,6 +15,12 @@ load_dotenv(BASE_DIR / ".env")
 # --- Secret (Phase 2 se dung, Phase 1 chi doc, khong goi API) ---
 TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY", "")
 
+# --- Gemini AI (tro ly phan tich giao thong; key doc tu .env, khong hard-code) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = "gemini-3.8-flash"
+# Fallback khi model moi bi qua tai tam thoi (503/504); van uu tien model chinh.
+GEMINI_MODEL_FALLBACKS = ("gemini-3.6-flash",)
+
 # --- Duong dan du lieu (theo PROJECT_CONTEXT.md) ---
 DATA_DIR = BASE_DIR / "data"
 PROCESSED_DIR = BASE_DIR / "processed"

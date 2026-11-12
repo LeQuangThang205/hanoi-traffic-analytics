@@ -30,9 +30,18 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from branca.element import MacroElement, Template
+from google import genai
+from google.genai import types
 from streamlit_folium import st_folium
 
-from config import HANOI_ROAD_CATALOG, ROADS_CSV, find_catalog_entry
+from config import (
+    GEMINI_API_KEY,
+    GEMINI_MODEL_FALLBACKS,
+    GEMINI_MODEL_NAME,
+    HANOI_ROAD_CATALOG,
+    ROADS_CSV,
+    find_catalog_entry,
+)
 from utils import road_manager
 from utils import geocoding as geocoding_service
 
@@ -1928,6 +1937,81 @@ def render_data_update_header():
         _handle_data_update()
 
 
+# --- Tro ly AI giao thong (Gemini) -----------------------------------------
+AI_CONTEXT_COLUMNS = [
+    "road_name",
+    "current_speed",
+    "free_flow_speed",
+    "congestion_percent",
+    "congestion_level",
+]
+
+
+def build_ai_context(combined_df):
+    """Bang tom tat 10 quan sat moi nhat dua vao prompt cho tro ly AI."""
+    missing = [col for col in AI_CONTEXT_COLUMNS if col not in combined_df.columns]
+    if missing:
+        raise ValueError("Thiếu cột dữ liệu cho AI: " + ", ".join(missing))
+    if combined_df.empty:
+        return "(chưa có dữ liệu quan sát)"
+    # combined_data.csv xep cu -> moi, nen lay 10 quan sat MOI NHAT.
+    return (
+        combined_df.sort_values("event_timestamp", ascending=False)
+        .head(10)[AI_CONTEXT_COLUMNS]
+        .to_string(index=False)
+    )
+
+
+def ask_traffic_ai(question, context):
+    """Goi Gemini tra loi cau hoi dua tren du lieu giao thong moi nhat."""
+    if not GEMINI_API_KEY:
+        raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env.")
+    prompt = (
+        "Đóng vai chuyên gia điều phối giao thông tại Hà Nội. "
+        "Dữ liệu quan sát mới nhất (congestion_percent càng cao càng tắc):\n"
+        f"{context}\n"
+        f"Câu hỏi của người dùng: {question}\n"
+        "Trả lời ngắn gọn, rõ ràng bằng tiếng Việt, ưu tiên gạch đầu dòng "
+        "và chỉ dựa trên dữ liệu trên."
+    )
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        # Fail fast de fallback neu model chinh bi treo.
+        http_options=types.HttpOptions(
+            timeout=45000,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+
+    # Cấu hình danh sách model (model chính và model dự phòng)
+    model_list = [GEMINI_MODEL_NAME, *GEMINI_MODEL_FALLBACKS]
+    response = None
+    last_error = None
+
+    for model_name in model_list:
+        try:
+            # Gọi API với model_name hiện tại
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            break  # Nếu thành công thì thoát vòng lặp
+        except Exception as exc:
+            # Bắt lỗi 503, 504, 429 để thử model tiếp theo
+            if "503" in str(exc) or "504" in str(exc) or "429" in str(exc):
+                last_error = exc
+                continue
+            else:
+                raise exc  # Lỗi khác thì báo đỏ luôn
+
+    if response is None:
+        raise last_error  # Nếu thử hết model vẫn xịt thì văng lỗi
+    answer = (response.text or "").strip()
+    if not answer:
+        raise ValueError("AI không trả về nội dung.")
+    return answer
+
+
 def main():
     st.set_page_config(
         page_title="Hanoi Traffic Analytics",
@@ -2191,9 +2275,6 @@ def main():
                             "Số quan sát: %{customdata[0]}<extra></extra>"
                         ),
                     ))
-                missing_hours = sorted(
-                    set(range(24)) - set(hourly_speed["local_hour"].tolist())
-                )
                 fig_hspeed.update_layout(
                     title="Tốc độ trung bình theo giờ",
                     xaxis_title="Giờ trong ngày",
@@ -2203,11 +2284,6 @@ def main():
                 )
                 style_dark(fig_hspeed, hovermode="x unified")
                 st.plotly_chart(fig_hspeed, width="stretch")
-                if missing_hours:
-                    st.caption(
-                        "Không có dữ liệu các giờ: "
-                        + ", ".join(f"{h}h" for h in missing_hours) + "."
-                    )
             except ValueError as exc:
                 _chart_error("Biểu đồ tốc độ theo giờ chưa vẽ được", exc)
             except Exception as exc:
@@ -2286,7 +2362,6 @@ def main():
             )
             style_dark(fig_heat)
             st.plotly_chart(fig_heat, width="stretch")
-            st.caption("Ô trống: giờ chưa có dữ liệu.")
         except ValueError as exc:
             _chart_error("Heatmap chưa vẽ được", exc)
         except Exception as exc:
@@ -2295,7 +2370,7 @@ def main():
         try:
             if not filters_ok:
                 raise ValueError(filter_error)
-            trend_points, trend_skipped = prepare_trend_data(chart_df, event_hanoi)
+            trend_points, _ = prepare_trend_data(chart_df, event_hanoi)
             fig_trend = go.Figure()
             trend_roads = sorted(trend_points["road_name"].unique().tolist())
             for idx, road in enumerate(trend_roads):
@@ -2319,11 +2394,6 @@ def main():
             )
             style_dark(fig_trend, hovermode="x unified")
             st.plotly_chart(fig_trend, width="stretch")
-            if trend_skipped:
-                st.caption(
-                    "Chưa đủ dữ liệu để vẽ xu hướng: "
-                    + ", ".join(display_road_name(r) for r in trend_skipped) + "."
-                )
         except ValueError as exc:
             _chart_error("Biểu đồ xu hướng chưa vẽ được", exc)
         except Exception as exc:
@@ -2365,7 +2435,7 @@ def main():
             try:
                 if not filters_ok:
                     raise ValueError(filter_error)
-                weekday_df, weekday_missing = prepare_weekday_comparison(
+                weekday_df, _ = prepare_weekday_comparison(
                     chart_df, event_hanoi
                 )
                 fig_week = go.Figure(go.Bar(
@@ -2391,10 +2461,6 @@ def main():
                 )
                 style_dark(fig_week)
                 st.plotly_chart(fig_week, width="stretch")
-                if weekday_missing:
-                    st.caption(
-                        "Chưa có dữ liệu các ngày: " + ", ".join(weekday_missing) + "."
-                    )
             except ValueError as exc:
                 _chart_error("Biểu đồ so sánh ngày trong tuần chưa vẽ được", exc)
             except Exception as exc:
@@ -2407,7 +2473,7 @@ def main():
             try:
                 if not filters_ok:
                     raise ValueError(filter_error)
-                rain_points, rain_pos, rain_note = prepare_rain_scatter(
+                rain_points, _, _ = prepare_rain_scatter(
                     chart_df, event_hanoi
                 )
                 fig_rain = go.Figure(go.Scatter(
@@ -2432,7 +2498,6 @@ def main():
                 )
                 style_dark(fig_rain)
                 st.plotly_chart(fig_rain, width="stretch")
-                st.caption(rain_note)
             except ValueError as exc:
                 _chart_error("Biểu đồ mưa và ùn tắc chưa vẽ được", exc)
             except Exception as exc:
@@ -2635,6 +2700,75 @@ def main():
             "và chỉ mô tả phân bố, không kết luận quan hệ nhân quả.\n"
             "- Thời điểm hiển thị là thời điểm quan sát, không phải thời gian thực."
         )
+
+    # ---- Tro ly AI: nut tron noi + cua so chat o goc duoi ben phai ----
+    # Chi goi API khi nguoi dung gui cau hoi; hoi thoai giu trong
+    # session_state de khong mat khi dashboard auto-refresh/rerun.
+    if "ai_chat_open" not in st.session_state:
+        st.session_state.ai_chat_open = False
+    if "ai_messages" not in st.session_state:
+        st.session_state.ai_messages = []
+
+    if not st.session_state.ai_chat_open:
+        with st.container(key="ai_fab"):
+            if st.button("💬", key="ai_open", help="Trợ lý AI giao thông"):
+                st.session_state.ai_chat_open = True
+                st.rerun()
+    else:
+        with st.container(key="ai_chat"):
+            head_left, head_right = st.columns(
+                [5, 1], vertical_alignment="center"
+            )
+            with head_left:
+                st.markdown(
+                    '<div class="ai-chat-title">🤖 Trợ lý AI giao thông</div>',
+                    unsafe_allow_html=True,
+                )
+            with head_right:
+                if st.button("✕", key="ai_close", help="Đóng cửa sổ chat"):
+                    st.session_state.ai_chat_open = False
+                    st.rerun()
+
+            # Khung chứa lịch sử chat có thể cuộn được
+            chat_container = st.container(height=380, border=False)
+            with chat_container:
+                if not st.session_state.ai_messages:
+                    with st.chat_message("assistant"):
+                        st.write(
+                            "Chào bạn! Mình là trợ lý giao thông Hà Nội. "
+                            "Hỏi mình về tuyến đang ùn tắc, tuyến thông "
+                            "thoáng hoặc gợi ý lộ trình thay thế nhé."
+                        )
+                for message in st.session_state.ai_messages:
+                    with st.chat_message(message["role"]):
+                        st.write(message["content"])
+
+            prompt = st.chat_input(
+                "Hỏi về tình hình giao thông...",
+                key="ai_chat_input",
+                submit_mode="disable",
+            )
+            if prompt:
+                st.session_state.ai_messages.append(
+                    {"role": "user", "content": prompt}
+                )
+                # Render tin nhắn mới vào đúng khung lịch sử (phía trên ô nhập)
+                # để không đẩy nội dung xuống dưới chat_input.
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.write(prompt)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Đang đọc dữ liệu giao thông..."):
+                            try:
+                                answer = ask_traffic_ai(
+                                    prompt, build_ai_context(combined_df)
+                                )
+                            except Exception as exc:
+                                answer = f"Không thể trả lời: {exc}"
+                        st.write(answer)
+                st.session_state.ai_messages.append(
+                    {"role": "assistant", "content": answer}
+                )
 
 
 if __name__ == "__main__":
